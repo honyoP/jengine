@@ -1,5 +1,6 @@
 use jengine::ecs::{Entity, World};
 use jengine::engine::{Color, Engine, Game, KeyCode};
+use jengine::{DEFAULT_TILESET, DEFAULT_TILE_H, DEFAULT_TILE_W};
 
 // ---------------------------------------------------------------------------
 // Components
@@ -241,6 +242,6 @@ fn main() {
     Engine::builder()
         .with_title("jengine demo")
         .with_size(800, 600)
-        .with_tileset(include_bytes!("../resources/unicode_16x16.png"), 16, 16)
+        .with_tileset(DEFAULT_TILESET, DEFAULT_TILE_W, DEFAULT_TILE_H)
         .run(DemoGame::new());
 }
