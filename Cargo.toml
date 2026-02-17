@@ -1,0 +1,16 @@
+[package]
+name = "jengine"
+version = "0.1.0"
+edition = "2024"
+authors = ["Tadeas Tran <tran.tadeas@protonmail.com>"]
+description = "Personal roguelike game engine."
+repository = "https://github.com/honyoP/jengine"
+keywords = ["gamedev"]
+categories = ["game-engines"]
+
+[dependencies]
+winit = "0.30"
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
