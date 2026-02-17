@@ -7,7 +7,7 @@ description = "Personal roguelike game engine."
 repository = "https://github.com/honyoP/jengine"
 keywords = ["gamedev"]
 categories = ["game-engines"]
-license = "GNU General Public License v3.0"
+license = "GPL-3.0"
 
 [dependencies]
 winit = "0.30"
