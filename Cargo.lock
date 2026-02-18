@@ -698,6 +698,7 @@ dependencies = [
  "bytemuck",
  "image",
  "pollster",
+ "walkdir",
  "wgpu",
  "winit",
 ]

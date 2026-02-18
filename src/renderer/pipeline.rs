@@ -5,14 +5,20 @@ pub struct TileVertex {
     pub uv: [f32; 2],
     pub fg_color: [f32; 4],
     pub bg_color: [f32; 4],
+    /// Sub-pixel visual offset in pixels applied before projection (animation juice).
+    pub v_offset: [f32; 2],
+    /// 0.0 = Background layer (static, no v_offset), 1.0 = Foreground layer (animated).
+    pub layer_id: f32,
 }
 
 impl TileVertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
-        0 => Float32x2,
-        1 => Float32x2,
-        2 => Float32x4,
-        3 => Float32x4,
+    const ATTRIBS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+        0 => Float32x2,  // position
+        1 => Float32x2,  // uv
+        2 => Float32x4,  // fg_color
+        3 => Float32x4,  // bg_color
+        4 => Float32x2,  // v_offset
+        5 => Float32,    // layer_id
     ];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {

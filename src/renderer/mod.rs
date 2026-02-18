@@ -1,5 +1,7 @@
 pub mod atlas;
+pub mod particle_pipeline;
 pub mod pipeline;
+pub mod sprite_atlas;
 
 use std::sync::Arc;
 
@@ -8,7 +10,9 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use atlas::Atlas;
+use particle_pipeline::{ParticlePipeline, ParticleVertex, create_particle_pipeline};
 use pipeline::{TilePipeline, TileVertex, create_tile_pipeline, orthographic_projection};
+use sprite_atlas::SpriteAtlas;
 
 pub struct Renderer {
     pub window: Arc<Window>,
@@ -17,10 +21,16 @@ pub struct Renderer {
     pub(crate) queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     tile_pipeline: TilePipeline,
+    particle_pipeline: ParticlePipeline,
     projection_buffer: wgpu::Buffer,
     projection_bind_group: wgpu::BindGroup,
+    /// Bind group for the character/glyph atlas (always present).
     atlas_bind_group: wgpu::BindGroup,
+    /// Bind group for the optional sprite atlas (None until load_sprite_folder is called).
+    sprite_atlas_bind_group: Option<wgpu::BindGroup>,
     pub(crate) atlas: Atlas,
+    /// Loaded sprite atlas metadata (UVs, tile spans, etc.).
+    pub(crate) sprite_atlas: Option<SpriteAtlas>,
 }
 
 impl Renderer {
@@ -61,6 +71,12 @@ impl Renderer {
         let atlas = Atlas::from_png(&device, &queue, png_bytes, tile_w, tile_h);
         let tile_pipeline = create_tile_pipeline(&device, format);
 
+        let particle_pipeline = create_particle_pipeline(
+            &device,
+            format,
+            &tile_pipeline.projection_bind_group_layout,
+        );
+
         let proj = orthographic_projection(config.width as f32, config.height as f32);
         let projection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("projection_buffer"),
@@ -99,11 +115,38 @@ impl Renderer {
             queue,
             config,
             tile_pipeline,
+            particle_pipeline,
             projection_buffer,
             projection_bind_group,
             atlas_bind_group,
+            sprite_atlas_bind_group: None,
             atlas,
+            sprite_atlas: None,
         }
+    }
+
+    /// Load all `.png` files from `path` (recursively) into the sprite atlas.
+    /// Must be called once during initialisation, before the game loop starts.
+    pub fn load_sprite_folder(&mut self, path: &str, tile_w: u32, tile_h: u32) {
+        let atlas = SpriteAtlas::load_folder(&self.device, &self.queue, path, tile_w, tile_h);
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sprite_atlas_bg"),
+            layout: &self.tile_pipeline.atlas_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&atlas.texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&atlas.sampler),
+                },
+            ],
+        });
+
+        self.sprite_atlas_bind_group = Some(bind_group);
+        self.sprite_atlas = Some(atlas);
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -123,7 +166,18 @@ impl Renderer {
         self.config.format
     }
 
-    pub fn render(&mut self, vertices: &[TileVertex]) -> Result<(), wgpu::SurfaceError> {
+    /// Render one frame.
+    ///
+    /// Draw order within the single render pass:
+    /// 1. `char_verts`   — character atlas (bg solid fills + char glyphs)
+    /// 2. `sprite_verts` — sprite atlas (static and animated sprites)
+    /// 3. `particle_verts` — particle pipeline
+    pub fn render(
+        &mut self,
+        char_verts: &[TileVertex],
+        sprite_verts: &[TileVertex],
+        particle_verts: &[ParticleVertex],
+    ) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -154,20 +208,48 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            if !vertices.is_empty() {
-                let vertex_buffer =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("tile_vertex_buffer"),
-                            contents: bytemuck::cast_slice(vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-
+            // ── Pass 1: character atlas (bg grid + char glyph grid) ───────
+            if !char_verts.is_empty() {
+                let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("char_vertex_buffer"),
+                    contents: bytemuck::cast_slice(char_verts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
                 pass.set_pipeline(&self.tile_pipeline.render_pipeline);
                 pass.set_bind_group(0, &self.projection_bind_group, &[]);
                 pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.draw(0..vertices.len() as u32, 0..1);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..char_verts.len() as u32, 0..1);
+            }
+
+            // ── Pass 2: sprite atlas (static + animated sprites) ──────────
+            if !sprite_verts.is_empty() {
+                if let Some(sprite_bg) = &self.sprite_atlas_bind_group {
+                    let vbuf =
+                        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("sprite_vertex_buffer"),
+                            contents: bytemuck::cast_slice(sprite_verts),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                    pass.set_pipeline(&self.tile_pipeline.render_pipeline);
+                    pass.set_bind_group(0, &self.projection_bind_group, &[]);
+                    pass.set_bind_group(1, sprite_bg, &[]);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.draw(0..sprite_verts.len() as u32, 0..1);
+                }
+            }
+
+            // ── Pass 3: particles ─────────────────────────────────────────
+            if !particle_verts.is_empty() {
+                let pbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("particle_vertex_buffer"),
+                    contents: bytemuck::cast_slice(particle_verts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                pass.set_pipeline(&self.particle_pipeline.render_pipeline);
+                pass.set_bind_group(0, &self.projection_bind_group, &[]);
+                pass.set_vertex_buffer(0, pbuf.slice(..));
+                pass.draw(0..particle_verts.len() as u32, 0..1);
             }
         }
 

@@ -15,3 +15,7 @@ wgpu = "22"
 pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+walkdir = "2"
+
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
