@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 pub use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
+use crate::ui::UI;
 use crate::ecs::Entity;
 use crate::renderer::Renderer;
 use crate::renderer::particle_pipeline::ParticleVertex;
@@ -30,6 +31,11 @@ impl Color {
     pub const YELLOW: Self = Self([1.0, 1.0, 0.0, 1.0]);
     pub const CYAN: Self = Self([0.0, 1.0, 1.0, 1.0]);
     pub const MAGENTA: Self = Self([1.0, 0.0, 1.0, 1.0]);
+    pub const TRANSPARENT: Self = Self([0.0, 0.0, 0.0, 0.0]);
+    pub const ORANGE: Self = Self([1.0, 0.55, 0.0, 1.0]);
+    pub const DARK_GREEN: Self = Self([0.0, 0.35, 0.05, 1.0]);
+    pub const DARK_BLUE: Self = Self([0.0, 0.1, 0.4, 1.0]);
+    pub const DARK_RED: Self = Self([0.45, 0.0, 0.0, 1.0]);
 }
 
 // ── Game trait ──────────────────────────────────────────────────────────────
@@ -148,9 +154,9 @@ struct SpriteCommand {
 // ── Engine ──────────────────────────────────────────────────────────────────
 
 pub struct Engine {
-    renderer: Renderer,
-    tile_w: u32,
-    tile_h: u32,
+    /// UI subsystem — holds the renderer, tile dimensions, UI vertices, and
+    /// mouse state.  Game code draws UI via `engine.ui.ui_*()`.
+    pub ui: UI,
     grid_w: u32,
     grid_h: u32,
     /// Layer 0: static background color fills (char atlas path).
@@ -178,10 +184,9 @@ impl Engine {
         let grid_w = size.width / tile_w;
         let grid_h = size.height / tile_h;
         let grid_size = (grid_w * grid_h) as usize;
+        let ui = UI::new(renderer, tile_w, tile_h);
         Self {
-            renderer,
-            tile_w,
-            tile_h,
+            ui,
             grid_w,
             grid_h,
             bg_grid: vec![BgCell::default(); grid_size],
@@ -203,8 +208,8 @@ impl Engine {
     pub fn tick(&self) -> u64 { self.tick }
     pub fn grid_width(&self) -> u32 { self.grid_w }
     pub fn grid_height(&self) -> u32 { self.grid_h }
-    pub fn tile_width(&self) -> u32 { self.tile_w }
-    pub fn tile_height(&self) -> u32 { self.tile_h }
+    pub fn tile_width(&self) -> u32 { self.ui.tile_w }
+    pub fn tile_height(&self) -> u32 { self.ui.tile_h }
 
     pub fn is_key_held(&self, key: KeyCode) -> bool { self.keys_held.contains(&key) }
     pub fn is_key_pressed(&self, key: KeyCode) -> bool { self.keys_pressed.contains(&key) }
@@ -254,10 +259,6 @@ impl Engine {
     ///
     /// `layer`: `0` = drawn before layer-1 sprites (background objects),
     ///          `1` = drawn after layer-0 sprites (foreground entities).
-    ///
-    /// Multi-tile sprites span `tile_w_span × tile_h_span` grid cells
-    /// automatically based on their pixel dimensions.
-    /// No animation offset is applied (entity-less).
     pub fn draw_sprite(&mut self, x: u32, y: u32, name: &str, layer: u8, tint: Color) {
         self.sprite_commands.push(SpriteCommand {
             x,
@@ -270,10 +271,6 @@ impl Engine {
     }
 
     /// Queue a sprite linked to an ECS entity (always Layer 1).
-    ///
-    /// The entity's active animation offset (`v_offset`) is applied to the
-    /// entire sprite quad — even for multi-tile sprites — keeping all tiles
-    /// of the entity moving as a single rigid unit.
     pub fn draw_sprite_entity(&mut self, x: u32, y: u32, name: &str, entity: Entity, tint: Color) {
         self.sprite_commands.push(SpriteCommand {
             x,
@@ -324,18 +321,15 @@ impl Engine {
     // ── Internal rendering helpers ─────────────────────────────────────────
 
     /// Build vertex data for the current frame.
-    ///
-    /// Returns `(char_verts, sprite_verts)`:
-    /// - `char_verts`: bg_grid (solid fills) + fg_grid (char glyphs), use char atlas.
-    /// - `sprite_verts`: sprite commands sorted by layer, use sprite atlas.
     fn build_vertices(&self) -> (Vec<TileVertex>, Vec<TileVertex>) {
-        // Compute current pixel offset for every animated entity.
         let offsets: HashMap<u32, [f32; 2]> = self
             .active_animations
             .iter()
             .map(|a| (a.entity_id, compute_offset(&a.anim_type, a.elapsed, a.duration)))
             .collect();
 
+        let tile_w = self.ui.tile_w;
+        let tile_h = self.ui.tile_h;
         let cells = (self.grid_w * self.grid_h) as usize;
         let mut char_verts = Vec::with_capacity(cells * 12);
 
@@ -343,10 +337,10 @@ impl Engine {
         for y in 0..self.grid_h {
             for x in 0..self.grid_w {
                 let cell = &self.bg_grid[(y * self.grid_w + x) as usize];
-                let px = (x * self.tile_w) as f32;
-                let py = (y * self.tile_h) as f32;
-                let pw = self.tile_w as f32;
-                let ph = self.tile_h as f32;
+                let px = (x * tile_w) as f32;
+                let py = (y * tile_h) as f32;
+                let pw = tile_w as f32;
+                let ph = tile_h as f32;
                 let dummy_uv = [0.0f32, 0.0];
 
                 let tl = TileVertex { position: [px,      py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, v_offset: [0.0, 0.0], layer_id: 0.0 };
@@ -363,12 +357,12 @@ impl Engine {
                 let cell = &self.fg_grid[(y * self.grid_w + x) as usize];
                 if cell.index == NO_GLYPH { continue; }
 
-                let px = (x * self.tile_w) as f32;
-                let py = (y * self.tile_h) as f32;
-                let pw = self.tile_w as f32;
-                let ph = self.tile_h as f32;
+                let px = (x * tile_w) as f32;
+                let py = (y * tile_h) as f32;
+                let pw = tile_w as f32;
+                let ph = tile_h as f32;
 
-                let (uv_min, uv_max) = self.renderer.atlas.uv_for_index(cell.index);
+                let (uv_min, uv_max) = self.ui.renderer.atlas.uv_for_index(cell.index);
                 let v_offset = offsets.get(&cell.entity_id).copied().unwrap_or([0.0, 0.0]);
 
                 let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: cell.fg.0, bg_color: [0.0; 4], v_offset, layer_id: 1.0 };
@@ -380,11 +374,10 @@ impl Engine {
         }
 
         // ── sprite_commands → sprite atlas quads ──────────────────────────
-        let Some(sprite_atlas) = self.renderer.sprite_atlas.as_ref() else {
+        let Some(sprite_atlas) = self.ui.renderer.sprite_atlas.as_ref() else {
             return (char_verts, Vec::new());
         };
 
-        // Sort by layer so layer-0 sprites are drawn before layer-1 sprites.
         let mut sorted: Vec<&SpriteCommand> = self.sprite_commands.iter().collect();
         sorted.sort_by_key(|c| c.layer);
 
@@ -392,15 +385,14 @@ impl Engine {
 
         for cmd in sorted {
             let Some(sprite) = sprite_atlas.sprites.get(&cmd.sprite_name) else {
-                continue; // Unknown sprite name; skip silently.
+                continue;
             };
 
-            let px = (cmd.x * self.tile_w) as f32;
-            let py = (cmd.y * self.tile_h) as f32;
-            let pw = (sprite.tile_w_span * self.tile_w) as f32;
-            let ph = (sprite.tile_h_span * self.tile_h) as f32;
+            let px = (cmd.x * tile_w) as f32;
+            let py = (cmd.y * tile_h) as f32;
+            let pw = (sprite.tile_w_span * tile_w) as f32;
+            let ph = (sprite.tile_h_span * tile_h) as f32;
 
-            // Entity sprites (layer=1, has entity_id) get v_offset; static ones do not.
             let (v_offset, layer_id) = if cmd.entity_id != NO_ENTITY {
                 (offsets.get(&cmd.entity_id).copied().unwrap_or([0.0, 0.0]), 1.0f32)
             } else {
@@ -422,9 +414,9 @@ impl Engine {
     }
 
     fn handle_resize(&mut self) {
-        let size = self.renderer.window.inner_size();
-        let new_gw = size.width / self.tile_w;
-        let new_gh = size.height / self.tile_h;
+        let size = self.ui.renderer.window.inner_size();
+        let new_gw = size.width / self.ui.tile_w;
+        let new_gh = size.height / self.ui.tile_h;
         if new_gw != self.grid_w || new_gh != self.grid_h {
             self.grid_w = new_gw;
             self.grid_h = new_gh;
@@ -524,7 +516,6 @@ impl ApplicationHandler for App {
             self.config.tile_h,
         ));
 
-        // Load sprite atlas during initialisation (before game loop starts).
         if let Some(folder) = &self.config.sprite_folder {
             renderer.load_sprite_folder(folder, self.config.tile_w, self.config.tile_h);
         }
@@ -538,7 +529,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(engine) = self.engine.as_ref() {
-            engine.renderer.window.request_redraw();
+            engine.ui.renderer.window.request_redraw();
         }
     }
 
@@ -549,8 +540,24 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(size) => {
-                engine.renderer.resize(size);
+                engine.ui.renderer.resize(size);
                 engine.handle_resize();
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                engine.ui.mouse_pos = [position.x as f32, position.y as f32];
+            }
+
+            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
+                match state {
+                    ElementState::Pressed => {
+                        engine.ui.mouse_clicked = true;
+                        engine.ui.mouse_held = true;
+                    }
+                    ElementState::Released => {
+                        engine.ui.mouse_held = false;
+                    }
+                }
             }
 
             WindowEvent::RedrawRequested => {
@@ -573,21 +580,23 @@ impl ApplicationHandler for App {
                 engine.keys_pressed.clear();
                 engine.keys_released.clear();
 
-                // Clear per-frame draw lists before calling game.render().
                 engine.sprite_commands.clear();
                 engine.particle_vertices.clear();
+                engine.ui.ui_vertices.clear();
                 self.game.render(engine);
 
                 let (char_verts, sprite_verts) = engine.build_vertices();
                 let particle_verts = std::mem::take(&mut engine.particle_vertices);
-                match engine.renderer.render(&char_verts, &sprite_verts, &particle_verts) {
+                let ui_verts = std::mem::take(&mut engine.ui.ui_vertices);
+                match engine.ui.renderer.render(&char_verts, &sprite_verts, &particle_verts, &ui_verts) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
-                        let size = engine.renderer.window.inner_size();
-                        engine.renderer.resize(size);
+                        let size = engine.ui.renderer.window.inner_size();
+                        engine.ui.renderer.resize(size);
                     }
                     Err(e) => eprintln!("render error: {e}"),
                 }
+                engine.ui.mouse_clicked = false;
             }
 
             WindowEvent::KeyboardInput {

@@ -2,6 +2,7 @@ pub mod atlas;
 pub mod particle_pipeline;
 pub mod pipeline;
 pub mod sprite_atlas;
+pub mod text;
 
 use std::sync::Arc;
 
@@ -31,6 +32,22 @@ pub struct Renderer {
     pub(crate) atlas: Atlas,
     /// Loaded sprite atlas metadata (UVs, tile spans, etc.).
     pub(crate) sprite_atlas: Option<SpriteAtlas>,
+    // ── UI overlay vertex buffer (persistent, invalidated by FNV hash) ─────
+    /// Persistent GPU vertex buffer for UI overlay; reallocated only when
+    /// vertex count exceeds current capacity (not every frame).
+    ui_vertex_buffer: Option<wgpu::Buffer>,
+    /// Number of TileVertex slots the current ui_vertex_buffer can hold.
+    ui_vertex_buffer_capacity: u32,
+    /// FNV-1a hash of the last uploaded UI vertex bytes; used to skip
+    /// redundant write_buffer calls when UI is unchanged.
+    ui_vertex_hash: u64,
+}
+
+/// FNV-1a 64-bit hash — used to detect unchanged UI vertex data.
+fn fnv1a_64(data: &[u8]) -> u64 {
+    data.iter().fold(14695981039346656037u64, |h, &b| {
+        h.wrapping_mul(1099511628211) ^ b as u64
+    })
 }
 
 impl Renderer {
@@ -122,6 +139,9 @@ impl Renderer {
             sprite_atlas_bind_group: None,
             atlas,
             sprite_atlas: None,
+            ui_vertex_buffer: None,
+            ui_vertex_buffer_capacity: 0,
+            ui_vertex_hash: 0,
         }
     }
 
@@ -169,19 +189,54 @@ impl Renderer {
     /// Render one frame.
     ///
     /// Draw order within the single render pass:
-    /// 1. `char_verts`   — character atlas (bg solid fills + char glyphs)
-    /// 2. `sprite_verts` — sprite atlas (static and animated sprites)
+    /// 1. `char_verts`     — character atlas (bg solid fills + char glyphs)
+    /// 2. `sprite_verts`   — sprite atlas (static and animated sprites)
     /// 3. `particle_verts` — particle pipeline
+    /// 4. `ui_verts`       — UI overlay (char atlas, always on top, Layer 2)
+    ///
+    /// The UI vertex buffer is persistent and only uploaded to the GPU when
+    /// the vertex content changes (FNV-1a hash-based invalidation).
     pub fn render(
         &mut self,
         char_verts: &[TileVertex],
         sprite_verts: &[TileVertex],
         particle_verts: &[ParticleVertex],
+        ui_verts: &[TileVertex],
     ) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // ── UI vertex buffer invalidation ─────────────────────────────────
+        // Only reallocate / re-upload when the UI vertex data actually changes.
+        if !ui_verts.is_empty() {
+            let ui_bytes: &[u8] = bytemuck::cast_slice(ui_verts);
+            let new_hash = fnv1a_64(ui_bytes);
+            let new_count = ui_verts.len() as u32;
+
+            if new_count > self.ui_vertex_buffer_capacity || self.ui_vertex_buffer.is_none() {
+                // Grow the buffer (next power-of-two, min 256 vertices).
+                let capacity = new_count.next_power_of_two().max(256);
+                self.ui_vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ui_vertex_buffer"),
+                    size: capacity as u64 * std::mem::size_of::<TileVertex>() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.ui_vertex_buffer_capacity = capacity;
+                self.ui_vertex_hash = !new_hash; // Force upload on resize.
+            }
+
+            if new_hash != self.ui_vertex_hash {
+                self.queue.write_buffer(
+                    self.ui_vertex_buffer.as_ref().unwrap(),
+                    0,
+                    ui_bytes,
+                );
+                self.ui_vertex_hash = new_hash;
+            }
+        }
 
         let mut encoder = self
             .device
@@ -250,6 +305,19 @@ impl Renderer {
                 pass.set_bind_group(0, &self.projection_bind_group, &[]);
                 pass.set_vertex_buffer(0, pbuf.slice(..));
                 pass.draw(0..particle_verts.len() as u32, 0..1);
+            }
+
+            // ── Pass 4: UI overlay (char atlas, always on top) ────────────
+            if !ui_verts.is_empty() {
+                if let Some(ui_buf) = &self.ui_vertex_buffer {
+                    let count = ui_verts.len() as u32;
+                    let byte_len = (count as usize * std::mem::size_of::<TileVertex>()) as u64;
+                    pass.set_pipeline(&self.tile_pipeline.render_pipeline);
+                    pass.set_bind_group(0, &self.projection_bind_group, &[]);
+                    pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+                    pass.set_vertex_buffer(0, ui_buf.slice(..byte_len));
+                    pass.draw(0..count, 0..1);
+                }
             }
         }
 
