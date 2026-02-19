@@ -1,4 +1,4 @@
-use crate::engine::{Engine, Game};
+use crate::engine::{jEngine, Game};
 
 pub enum SceneAction {
     None,
@@ -10,10 +10,10 @@ pub enum SceneAction {
 }
 
 pub trait Scene {
-    fn on_enter(&mut self, _engine: &mut Engine) {}
-    fn on_exit(&mut self, _engine: &mut Engine) {}
-    fn update(&mut self, engine: &mut Engine) -> SceneAction;
-    fn draw(&mut self, engine: &mut Engine);
+    fn on_enter(&mut self, _engine: &mut jEngine) {}
+    fn on_exit(&mut self, _engine: &mut jEngine) {}
+    fn update(&mut self, engine: &mut jEngine) -> SceneAction;
+    fn draw(&mut self, engine: &mut jEngine);
     fn is_transparent(&self) -> bool { false }
 }
 
@@ -27,7 +27,7 @@ impl SceneStack {
         Self { scenes: vec![initial], initialized: false }
     }
 
-    fn update_inner(&mut self, engine: &mut Engine) {
+    fn update_inner(&mut self, engine: &mut jEngine) {
         let action = if let Some(top) = self.scenes.last_mut() {
             top.update(engine)
         } else {
@@ -65,7 +65,7 @@ impl SceneStack {
         }
     }
 
-    fn draw_inner(&mut self, engine: &mut Engine) {
+    fn draw_inner(&mut self, engine: &mut jEngine) {
         let start = self.scenes.iter().rposition(|s| !s.is_transparent()).unwrap_or(0);
         for scene in &mut self.scenes[start..] {
             scene.draw(engine);
@@ -74,7 +74,7 @@ impl SceneStack {
 }
 
 impl Game for SceneStack {
-    fn update(&mut self, engine: &mut Engine) {
+    fn update(&mut self, engine: &mut jEngine) {
         if !self.initialized {
             self.initialized = true;
             if let Some(s) = self.scenes.first_mut() {
@@ -84,7 +84,7 @@ impl Game for SceneStack {
         self.update_inner(engine);
     }
 
-    fn render(&mut self, engine: &mut Engine) {
+    fn render(&mut self, engine: &mut jEngine) {
         engine.clear();
         self.draw_inner(engine);
     }

@@ -39,6 +39,7 @@ impl CameraUniform {
 pub struct Camera {
     /// World-space pixel position the camera is centered on.
     pub position: Vec2,
+    pub target_position: Vec2,
     /// Current zoom level (1.0 = 1:1, >1 zooms in, <1 zooms out).
     pub zoom: f32,
     /// Rotation in radians (reserved; not yet applied in the shader).
@@ -57,6 +58,7 @@ impl Camera {
     pub fn new(center_x: f32, center_y: f32) -> Self {
         Self {
             position: Vec2::new(center_x, center_y),
+            target_position: Vec2::new(center_x, center_y),
             zoom: 1.0,
             rotation: 0.0,
             target_zoom: 1.0,
@@ -73,6 +75,15 @@ impl Camera {
         // Smooth zoom interpolation (converges at ~8× per second).
         let speed = 8.0_f32;
         self.zoom += (self.target_zoom - self.zoom) * (speed * dt).min(1.0);
+
+        let threshold = 0.01;
+        if self.position.distance_squared(self.target_position) > threshold * threshold {
+            // Interpolate
+            self.position += (self.target_position - self.position) * (speed * dt).min(1.0);
+        } else {
+            // 3. Optional: Snap to exact position to prevent micro-drift
+            self.position = self.target_position;
+        }
 
         // Camera shake: high-frequency sinusoidal offset with linear decay.
         if self.shake_timer > 0.0 {

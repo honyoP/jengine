@@ -17,7 +17,7 @@
 /// each frame from `KeyEvent.text`) and drains the buffer as it processes
 /// them.  This means if an `InputBox` is focused it will consume all typed
 /// characters before the game sees them.
-use crate::engine::{Color, Engine, KeyCode};
+use crate::engine::{Color, jEngine, KeyCode};
 
 // ── Internal widget palette ────────────────────────────────────────────────────
 // All widgets share these defaults so they look consistent out of the box.
@@ -73,7 +73,7 @@ impl Dropdown {
     ///
     /// Returns `Some(index)` if the user selected a different option this
     /// frame; `None` otherwise (including when the same option is re-clicked).
-    pub fn draw(&mut self, engine: &mut Engine, x: f32, y: f32, w: f32) -> Option<usize> {
+    pub fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, w: f32) -> Option<usize> {
         let th = engine.tile_height() as f32;
         let tw = engine.tile_width() as f32;
         let n = self.options.len();
@@ -197,7 +197,7 @@ impl InputBox {
     /// Draw the input box at pixel position `(x, y)` with width `w`.
     ///
     /// Returns `true` if `value` changed this frame.
-    pub fn draw(&mut self, engine: &mut Engine, x: f32, y: f32, w: f32) -> bool {
+    pub fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, w: f32) -> bool {
         let th = engine.tile_height() as f32;
         let tw = engine.tile_width() as f32;
         let dt = engine.dt();
@@ -313,7 +313,7 @@ impl ToggleSelector {
     /// Draw the toggle selector at pixel position `(x, y)` with total width `w`.
     ///
     /// Returns `Some(index)` if the selection changed this frame; `None` otherwise.
-    pub fn draw(&mut self, engine: &mut Engine, x: f32, y: f32, w: f32) -> Option<usize> {
+    pub fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, w: f32) -> Option<usize> {
         let th = engine.tile_height() as f32;
         let tw = engine.tile_width() as f32;
         let n = self.options.len();

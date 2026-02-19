@@ -42,8 +42,8 @@ impl Color {
 // ── Game trait ──────────────────────────────────────────────────────────────
 
 pub trait Game {
-    fn update(&mut self, engine: &mut Engine);
-    fn render(&mut self, engine: &mut Engine);
+    fn update(&mut self, engine: &mut jEngine);
+    fn render(&mut self, engine: &mut jEngine);
 }
 
 // ── Animation system ────────────────────────────────────────────────────────
@@ -154,7 +154,9 @@ struct SpriteCommand {
 
 // ── Engine ──────────────────────────────────────────────────────────────────
 
-pub struct Engine {
+// Why non_camel_case? Just to style on the plebeians
+#[allow(non_camel_case_types)]
+pub struct jEngine {
     /// UI subsystem — holds the renderer, tile dimensions, UI vertices, and
     /// mouse state.  Game code draws UI via `engine.ui.ui_*()`.
     pub ui: UI,
@@ -183,7 +185,7 @@ pub struct Engine {
     pub(crate) quit_requested: bool,
 }
 
-impl Engine {
+impl jEngine {
     pub fn builder() -> EngineBuilder {
         EngineBuilder::default()
     }
@@ -240,6 +242,10 @@ impl Engine {
     /// Move the camera so that world-pixel coordinate `(x, y)` is centred on screen.
     pub fn set_camera_pos(&mut self, x: f32, y: f32) {
         self.camera.position = glam::Vec2::new(x, y);
+    }
+
+    pub fn move_camera_pos(&mut self, x: f32, y: f32) {
+        self.camera.target_position = glam::Vec2::new(x, y);
     }
 
     /// Set the zoom target.  The camera smoothly lerps toward this value each frame.
@@ -560,7 +566,7 @@ impl EngineBuilder {
 struct App {
     config: EngineBuilder,
     game: Box<dyn Game>,
-    engine: Option<Engine>,
+    engine: Option<jEngine>,
     last_instant: Option<Instant>,
     accumulator: f32,
     fixed_dt: f32,
@@ -593,7 +599,7 @@ impl ApplicationHandler for App {
             renderer.load_sprite_folder(folder, self.config.tile_w, self.config.tile_h);
         }
 
-        self.engine = Some(Engine::from_builder(
+        self.engine = Some(jEngine::from_builder(
             renderer,
             self.config.tile_w,
             self.config.tile_h,

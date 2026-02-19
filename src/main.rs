@@ -7,7 +7,7 @@ use jengine::ecs::{Entity, World};
 use jengine::ui::{BorderStyle, Label};
 use jengine::ui::widgets::{Dropdown, ToggleSelector};
 use jengine::engine::{
-    AnimationType, Color, Engine, KeyCode,
+    AnimationType, Color, jEngine, KeyCode,
 };
 use jengine::renderer::text::Font;
 use jengine::scene::{Scene, SceneAction, SceneStack};
@@ -138,7 +138,7 @@ fn update_particles(world: &mut World, dt: f32) {
     for e in dead { world.despawn(e); }
 }
 
-fn render_particles(world: &World, engine: &mut Engine) {
+fn render_particles(world: &World, engine: &mut jEngine) {
     for (e, p) in world.query::<Particle>() {
         if let Some(pos) = world.get::<ParticlePosition>(e) {
             let t = (p.lifetime / p.max_lifetime).clamp(0.0, 1.0);
@@ -312,7 +312,7 @@ impl MainMenuScene {
         Self { selected: 0 }
     }
 
-    fn activate(&self, selected: usize, _engine: &mut Engine) -> SceneAction {
+    fn activate(&self, selected: usize, _engine: &mut jEngine) -> SceneAction {
         match selected {
             0 => SceneAction::Switch(Box::new(GameScene::new())),
             1 => SceneAction::Push(Box::new(OptionsScene::new(WindowConfig::default()))),
@@ -323,7 +323,7 @@ impl MainMenuScene {
 }
 
 impl Scene for MainMenuScene {
-    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+    fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         let items_len = 3;
 
         if engine.is_key_pressed(KeyCode::ArrowUp) && self.selected > 0 {
@@ -364,7 +364,7 @@ impl Scene for MainMenuScene {
         SceneAction::None
     }
 
-    fn draw(&mut self, engine: &mut Engine) {
+    fn draw(&mut self, engine: &mut jEngine) {
         let tw = engine.tile_width() as f32;
         let th = engine.tile_height() as f32;
         let sw = engine.grid_width() as f32 * tw;
@@ -435,14 +435,14 @@ impl OptionsScene {
 }
 
 impl Scene for OptionsScene {
-    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+    fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         if engine.is_key_pressed(KeyCode::Escape) {
             return SceneAction::Pop;
         }
         SceneAction::None
     }
 
-    fn draw(&mut self, engine: &mut Engine) {
+    fn draw(&mut self, engine: &mut jEngine) {
         let tw = engine.tile_width() as f32;
         let th = engine.tile_height() as f32;
         let sw = engine.grid_width() as f32 * tw;
@@ -675,7 +675,7 @@ impl GameScene {
 
     // ── UI rendering sub-routines ─────────────────────────────────────────
 
-    fn draw_hud_top(&mut self, engine: &mut Engine) {
+    fn draw_hud_top(&mut self, engine: &mut jEngine) {
         let sw = self.window_config.physical_width as f32;
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
@@ -704,7 +704,7 @@ impl GameScene {
         engine.ui.ui_rect(icon_x, th * 2.0, tw * 3.0, th, PANEL_BG);
     }
 
-    fn draw_hud_bottom(&mut self, engine: &mut Engine) {
+    fn draw_hud_bottom(&mut self, engine: &mut jEngine) {
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
         let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
         let tw = engine.tile_width()  as f32;
@@ -750,7 +750,7 @@ impl GameScene {
         }
     }
 
-    fn draw_log_panel(&mut self, engine: &mut Engine) {
+    fn draw_log_panel(&mut self, engine: &mut jEngine) {
         if !self.ui.log_open { return; }
 
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
@@ -780,7 +780,7 @@ impl GameScene {
         }
     }
 
-    fn draw_inventory_modal(&mut self, engine: &mut Engine) {
+    fn draw_inventory_modal(&mut self, engine: &mut jEngine) {
         if !self.ui.inventory_open { return; }
 
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
@@ -826,8 +826,8 @@ impl GameScene {
             " [Tab] Switch  [Esc] Close ", UI_DIM, Color::TRANSPARENT);
     }
 
-    fn draw_inventory_content(&mut self, engine: &mut Engine,
-                               x: f32, y: f32, w: f32, h: f32) {
+    fn draw_inventory_content(&mut self, engine: &mut jEngine,
+                              x: f32, y: f32, w: f32, h: f32) {
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
@@ -875,8 +875,8 @@ impl GameScene {
         }
     }
 
-    fn draw_skill_tree_content(&mut self, engine: &mut Engine,
-                                x: f32, y: f32, _w: f32, _h: f32) {
+    fn draw_skill_tree_content(&mut self, engine: &mut jEngine,
+                               x: f32, y: f32, _w: f32, _h: f32) {
         let th = engine.tile_height() as f32;
 
         engine.ui.ui_text(x, y, "SKILL TREE", UI_ACCENT, Color::TRANSPARENT);
@@ -901,8 +901,8 @@ impl GameScene {
         }
     }
 
-    fn draw_relationship_content(&mut self, engine: &mut Engine,
-                                  x: f32, y: f32, w: f32, h: f32) {
+    fn draw_relationship_content(&mut self, engine: &mut jEngine,
+                                 x: f32, y: f32, w: f32, h: f32) {
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
@@ -939,7 +939,7 @@ impl GameScene {
         }
     }
 
-    fn draw_dialogue_modal(&mut self, engine: &mut Engine) {
+    fn draw_dialogue_modal(&mut self, engine: &mut jEngine) {
         let dialogue = match &self.ui.dialogue {
             Some(d) => d,
             None    => return,
@@ -993,7 +993,7 @@ impl GameScene {
 }
 
 impl Scene for GameScene {
-    fn on_enter(&mut self, engine: &mut Engine) {
+    fn on_enter(&mut self, engine: &mut jEngine) {
         let gw = engine.grid_width();
         let gh = engine.grid_height();
         self.build_map(gw, gh);
@@ -1023,14 +1023,14 @@ impl Scene for GameScene {
             if let Some(pos) = self.world.get::<Position>(player) {
                 let cx = (pos.x as f32 + 0.5) * engine.tile_width() as f32;
                 let cy = (pos.y as f32 + 0.5) * engine.tile_height() as f32;
-                engine.set_camera_pos(cx, cy);
+                engine.move_camera_pos(cx, cy);
             }
         }
 
         self.initialized = true;
     }
 
-    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+    fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         let gw = engine.grid_width();
         let gh = engine.grid_height();
 
@@ -1069,7 +1069,7 @@ impl Scene for GameScene {
             if let Some(pos) = self.world.get::<Position>(player) {
                 let cx = (pos.x as f32 + 0.5) * tw as f32;
                 let cy = (pos.y as f32 + 0.5) * th as f32;
-                engine.set_camera_pos(cx, cy);
+                engine.move_camera_pos(cx, cy);
             }
         }
 
@@ -1317,7 +1317,7 @@ impl Scene for GameScene {
         SceneAction::None
     }
 
-    fn draw(&mut self, engine: &mut Engine) {
+    fn draw(&mut self, engine: &mut jEngine) {
         // ── Char-atlas entities ──────────────────────────────────────────────
         for (entity, renderable) in self.world.query::<Renderable>() {
             if let Some(pos) = self.world.get::<Position>(entity) {
@@ -1387,7 +1387,7 @@ impl PauseOverlayScene {
         Self { selected: 0, window_config }
     }
 
-    fn activate(&self, selected: usize, _engine: &mut Engine) -> SceneAction {
+    fn activate(&self, selected: usize, _engine: &mut jEngine) -> SceneAction {
         match selected {
             0 => SceneAction::Pop,
             1 => SceneAction::Push(Box::new(OptionsScene::new(self.window_config.clone()))),
@@ -1401,7 +1401,7 @@ impl PauseOverlayScene {
 impl Scene for PauseOverlayScene {
     fn is_transparent(&self) -> bool { true }
 
-    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+    fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         let items_len = 4;
 
         if engine.is_key_pressed(KeyCode::Escape) {
@@ -1445,7 +1445,7 @@ impl Scene for PauseOverlayScene {
         SceneAction::None
     }
 
-    fn draw(&mut self, engine: &mut Engine) {
+    fn draw(&mut self, engine: &mut jEngine) {
         let tw = engine.tile_width() as f32;
         let th = engine.tile_height() as f32;
         let sw = engine.grid_width() as f32 * tw;
@@ -1489,7 +1489,7 @@ impl Scene for PauseOverlayScene {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
-    Engine::builder()
+    jEngine::builder()
         .with_title("jengine demo")
         .with_size(1280, 720)
         .with_tileset(DEFAULT_TILESET, 16, 24)
