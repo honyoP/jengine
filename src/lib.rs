@@ -4,6 +4,7 @@ pub mod engine;
 pub mod geometry;
 pub mod pathfinding;
 pub mod renderer;
+pub mod scene;
 pub mod ui;
 pub mod window;
 

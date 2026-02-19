@@ -179,6 +179,8 @@ pub struct Engine {
     /// Cleared at the start of each frame alongside `keys_pressed`.
     /// Widgets drain this during `draw()` to implement text input.
     pub chars_typed: Vec<char>,
+    /// Set to `true` by `request_quit()`; the event loop exits after the current tick.
+    pub(crate) quit_requested: bool,
 }
 
 impl Engine {
@@ -216,6 +218,7 @@ impl Engine {
             keys_pressed: HashSet::new(),
             keys_released: HashSet::new(),
             chars_typed: Vec::new(),
+            quit_requested: false,
         }
     }
 
@@ -255,6 +258,12 @@ impl Engine {
     /// The shake lasts 0.5 s and decays linearly.
     pub fn camera_shake(&mut self, intensity: f32) {
         self.camera.shake(intensity);
+    }
+
+    /// Signal that the application should exit.  The event loop will call
+    /// `exit()` after the current update tick completes.
+    pub fn request_quit(&mut self) {
+        self.quit_requested = true;
     }
 
     // ── Grid drawing (character / char-atlas path) ─────────────────────────
@@ -637,6 +646,10 @@ impl ApplicationHandler for App {
                     engine.dt = self.fixed_dt;
                     engine.tick += 1;
                     self.game.update(engine);
+                    if engine.quit_requested {
+                        event_loop.exit();
+                        return;
+                    }
                     self.accumulator -= self.fixed_dt;
                 }
 

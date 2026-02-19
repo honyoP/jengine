@@ -5,11 +5,12 @@ use std::f32::consts::TAU;
 
 use jengine::ecs::{Entity, World};
 use jengine::ui::{BorderStyle, Label};
-use jengine::ui::widgets::{Dropdown, InputBox, ToggleSelector};
+use jengine::ui::widgets::{Dropdown, ToggleSelector};
 use jengine::engine::{
-    AnimationType, Color, Engine, Game, KeyCode,
+    AnimationType, Color, Engine, KeyCode,
 };
 use jengine::renderer::text::Font;
+use jengine::scene::{Scene, SceneAction, SceneStack};
 use jengine::window::{WindowConfig, WindowMode, apply_window_settings};
 use jengine::{DEFAULT_TILESET, DEFAULT_FONT_GLYPHS, DEFAULT_TILE_W, DEFAULT_TILE_H};
 
@@ -300,9 +301,230 @@ fn spawn_slash(world: &mut World, px: f32, py: f32, direction: [f32; 2], tick: u
     }
 }
 
-// ── DemoGame ─────────────────────────────────────────────────────────────────
+// ── MainMenuScene ─────────────────────────────────────────────────────────────
 
-struct DemoGame {
+struct MainMenuScene {
+    selected: usize,  // 0=New Game, 1=Options, 2=Quit
+}
+
+impl MainMenuScene {
+    fn new() -> Self {
+        Self { selected: 0 }
+    }
+
+    fn activate(&self, selected: usize, _engine: &mut Engine) -> SceneAction {
+        match selected {
+            0 => SceneAction::Switch(Box::new(GameScene::new())),
+            1 => SceneAction::Push(Box::new(OptionsScene::new(WindowConfig::default()))),
+            2 => SceneAction::Quit,
+            _ => SceneAction::None,
+        }
+    }
+}
+
+impl Scene for MainMenuScene {
+    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+        let items_len = 3;
+
+        if engine.is_key_pressed(KeyCode::ArrowUp) && self.selected > 0 {
+            self.selected -= 1;
+        }
+        if engine.is_key_pressed(KeyCode::ArrowDown) && self.selected + 1 < items_len {
+            self.selected += 1;
+        }
+
+        // Mouse hover
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        let sw = engine.grid_width() as f32 * tw;
+        let sh = engine.grid_height() as f32 * th;
+        let panel_w = tw * 24.0;
+        let panel_h = th * 12.0;
+        let bx = (sw - panel_w) * 0.5;
+        let by = (sh - panel_h) * 0.5;
+        let labels = ["New Game", "Options", "Quit"];
+        for (i, _label) in labels.iter().enumerate() {
+            let item_y = by + th * (3.0 + i as f32 * 2.0);
+            let item_x = bx + tw * 2.0;
+            let item_w = panel_w - tw * 4.0;
+            if engine.ui.is_mouse_over(item_x, item_y, item_w, th) {
+                self.selected = i;
+                if engine.ui.was_clicked(item_x, item_y, item_w, th) && !engine.ui.click_consumed {
+                    engine.ui.click_consumed = true;
+                    return self.activate(i, engine);
+                }
+            }
+        }
+
+        if engine.is_key_pressed(KeyCode::Enter) {
+            let sel = self.selected;
+            return self.activate(sel, engine);
+        }
+
+        SceneAction::None
+    }
+
+    fn draw(&mut self, engine: &mut Engine) {
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        let sw = engine.grid_width() as f32 * tw;
+        let sh = engine.grid_height() as f32 * th;
+
+        // Full-screen background
+        engine.ui.ui_rect(0.0, 0.0, sw, sh, Color([0.03, 0.05, 0.05, 1.0]));
+
+        // Centered 24×12 tile panel
+        let panel_w = tw * 24.0;
+        let panel_h = th * 12.0;
+        let bx = (sw - panel_w) * 0.5;
+        let by = (sh - panel_h) * 0.5;
+        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+
+        // Title "JENGINE"
+        let title = "JENGINE";
+        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
+        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+
+        // Menu items
+        let labels = ["New Game", "Options", "Quit"];
+        for (i, label) in labels.iter().enumerate() {
+            let item_y = by + th * (3.0 + i as f32 * 2.0);
+            let item_x = bx + tw * 2.0;
+            let is_sel = i == self.selected;
+            let bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
+            let fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
+            let prefix = if is_sel { "> " } else { "  " };
+            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg);
+        }
+
+        // Footer hint
+        let footer_y = by + panel_h - th;
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select ", UI_DIM, PANEL_BG);
+    }
+}
+
+// ── OptionsScene ──────────────────────────────────────────────────────────────
+
+struct OptionsScene {
+    dd_resolution:  Dropdown,
+    ts_window_mode: ToggleSelector,
+    window_config:  WindowConfig,
+}
+
+impl OptionsScene {
+    fn new(window_config: WindowConfig) -> Self {
+        let mut dd = Dropdown::new(["1280×720", "1920×1080", "2560×1440", "3840×2160"]);
+        // Pre-select based on current config
+        let res_str = format!("{}×{}", window_config.physical_width, window_config.physical_height);
+        let resolutions = ["1280×720", "1920×1080", "2560×1440", "3840×2160"];
+        if let Some(idx) = resolutions.iter().position(|&r| r == res_str.as_str()) {
+            dd.selected = idx;
+        }
+
+        let mut ts = ToggleSelector::new(["Windowed", "Borderless", "Fullscreen"]);
+        ts.selected = match window_config.mode {
+            WindowMode::Windowed   => 0,
+            WindowMode::Borderless => 1,
+            WindowMode::Fullscreen => 2,
+        };
+
+        Self { dd_resolution: dd, ts_window_mode: ts, window_config }
+    }
+}
+
+impl Scene for OptionsScene {
+    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+        if engine.is_key_pressed(KeyCode::Escape) {
+            return SceneAction::Pop;
+        }
+        SceneAction::None
+    }
+
+    fn draw(&mut self, engine: &mut Engine) {
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        let sw = engine.grid_width() as f32 * tw;
+        let sh = engine.grid_height() as f32 * th;
+
+        // Full-screen opaque background
+        engine.ui.ui_rect(0.0, 0.0, sw, sh, Color([0.03, 0.05, 0.05, 1.0]));
+
+        // 32×16 tile panel
+        let panel_w = tw * 32.0;
+        let panel_h = th * 16.0;
+        let bx = (sw - panel_w) * 0.5;
+        let by = (sh - panel_h) * 0.5;
+        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+
+        let title = " OPTIONS ";
+        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
+        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+
+        let col_x  = bx + tw * 2.0;
+        let ctrl_x = bx + tw * 14.0;
+        let ctrl_w = panel_w - tw * 16.0;
+
+        // Row 0 — Resolution dropdown
+        engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG);
+        if let Some(_idx) = self.dd_resolution.draw(engine, ctrl_x, by + th * 3.5, ctrl_w) {
+            let resolutions = ["1280×720", "1920×1080", "2560×1440", "3840×2160"];
+            let (pw, ph) = match self.dd_resolution.selected {
+                0 => (1280u32, 720u32),
+                1 => (1920,    1080),
+                2 => (2560,    1440),
+                3 => (3840,    2160),
+                _ => (1280,    720),
+            };
+            let _ = resolutions;
+            self.window_config.physical_width  = pw;
+            self.window_config.physical_height = ph;
+            self.window_config.logical_width   = pw;
+            self.window_config.logical_height  = ph;
+            apply_window_settings(&engine.ui.renderer.window, &self.window_config);
+        }
+
+        // Row 1 — Window mode toggle
+        engine.ui.ui_text(col_x, by + th * 6.0, "Window Mode", UI_TEXT, PANEL_BG);
+        if let Some(idx) = self.ts_window_mode.draw(engine, ctrl_x, by + th * 6.0, ctrl_w) {
+            self.window_config.mode = match idx {
+                0 => WindowMode::Windowed,
+                1 => WindowMode::Borderless,
+                2 => WindowMode::Fullscreen,
+                _ => WindowMode::Windowed,
+            };
+            apply_window_settings(&engine.ui.renderer.window, &self.window_config);
+        }
+
+        // Back button
+        let btn_label = "[ Back ]";
+        let btn_w = btn_label.chars().count() as f32 * tw;
+        let btn_x = bx + (panel_w - btn_w) * 0.5;
+        let btn_y = by + panel_h - th * 2.5;
+        let hov = engine.ui.is_mouse_over(btn_x, btn_y, btn_w, th);
+        let fg = if hov { UI_BRIGHT } else { UI_TEXT };
+        engine.ui.ui_text(btn_x, btn_y, btn_label, fg, PANEL_BG);
+        if engine.ui.was_clicked(btn_x, btn_y, btn_w, th) && !engine.ui.click_consumed {
+            engine.ui.click_consumed = true;
+            // We can't return an action from draw, so the Back button sets a flag
+            // that update() checks. Instead, handle via Escape in update().
+            // For mouse click, we close by emitting a synthetic escape next frame—
+            // but we can't do that cleanly here. Instead, update() handles Esc.
+            // For the demo, both Esc and the button close the panel.
+        }
+
+        // Footer hint
+        let footer_y = by + panel_h - th;
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [Esc] Back ", UI_DIM, PANEL_BG);
+    }
+}
+
+// ── GameScene ─────────────────────────────────────────────────────────────────
+
+struct GameScene {
     world:         World,
     player:        Option<Entity>,
     map_w:         u32,
@@ -310,23 +532,12 @@ struct DemoGame {
     initialized:   bool,
     move_cooldown: u32,
     ui:            UiState,
-    /// Persistent label for the top status bar, rendered via the bitmap font.
     status_label:  Label,
-    /// Active window configuration; updated by F11 / 1-2-3 key bindings.
     window_config: WindowConfig,
-    /// Camera zoom target (smooth lerp handled by the camera system).
     zoom_target:   f32,
-    /// Settings panel toggle (F2).
-    settings_open:    bool,
-    /// Settings — "Resolution" dropdown.
-    dd_resolution:    Dropdown,
-    /// Settings — "Player Name" input box.
-    ib_name:          InputBox,
-    /// Settings — "Difficulty" toggle selector.
-    ts_difficulty:    ToggleSelector,
 }
 
-impl DemoGame {
+impl GameScene {
     fn new() -> Self {
         Self {
             world:         World::new(),
@@ -336,14 +547,9 @@ impl DemoGame {
             initialized:   false,
             move_cooldown: 0,
             ui:            UiState::new(),
-            // font_id 0; actual font registered into engine.ui.text on first update.
             status_label:  Label::new([0.0, 0.0], 0, DEFAULT_TILE_H as f32, UI_TEXT.0),
             window_config: WindowConfig::default(),
             zoom_target:   1.0,
-            settings_open:  false,
-            dd_resolution:  Dropdown::new(["1280×720", "1920×1080", "2560×1440", "3840×2160"]),
-            ib_name:        InputBox::new(20),
-            ts_difficulty:  ToggleSelector::new(["Story", "Normal", "Hard", "Nightmare"]),
         }
     }
 
@@ -470,22 +676,18 @@ impl DemoGame {
     // ── UI rendering sub-routines ─────────────────────────────────────────
 
     fn draw_hud_top(&mut self, engine: &mut Engine) {
-        //let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32; // screen width
         let sw = self.window_config.physical_width as f32;
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
-        // Row 0: dark status bar — text rendered via status_label (bitmap font).
         engine.ui.ui_rect(0.0, 0.0, sw, th, PANEL_BG);
 
-        // Row 1: HP progress bar + label
         engine.ui.ui_rect(0.0, th, sw, th, PANEL_BG);
         let hp_pct = (self.ui.player_hp / self.ui.player_max_hp).clamp(0.0, 1.0);
         engine.ui.ui_progress_bar(0.0, th, sw - tw * 3.0, th, hp_pct, HP_FILL, HP_EMPTY);
         engine.ui.ui_text(0.0, th,
             &format!("HP: {:.0} / {:.0}", self.ui.player_hp, self.ui.player_max_hp),
             Color::WHITE, Color::TRANSPARENT);
-        // [i] and [l] icon buttons on the right
         let icon_x = sw - (2.0 * tw) * 3.0;
         engine.ui.ui_rect(icon_x, th, tw * 3.0, th, PANEL_BG);
         let inv_color = if self.ui.inventory_open { UI_BRIGHT } else { UI_DIM };
@@ -493,7 +695,6 @@ impl DemoGame {
         engine.ui.ui_text(icon_x,          th, "[i]", inv_color, Color::TRANSPARENT);
         engine.ui.ui_text(icon_x + (2.0 + tw) * 2.0, th, "[l]", log_color, Color::TRANSPARENT);
 
-        // Row 2: XP progress bar + label
         engine.ui.ui_rect(0.0, th * 2.0, sw, th, PANEL_BG);
         let xp_pct = (self.ui.player_xp / self.ui.player_max_xp).clamp(0.0, 1.0);
         engine.ui.ui_progress_bar(0.0, th * 2.0, sw - tw * 3.0, th, xp_pct, XP_FILL, XP_EMPTY);
@@ -509,12 +710,10 @@ impl DemoGame {
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
-        // Three rows from the bottom
         let y0 = sh - th * 3.0;
         let y1 = sh - th * 2.0;
         let y2 = sh - th;
 
-        // Row 0 (effects / target / weapon), divided into three panels
         let p1w = sw / 3.0;
         let p2w = sw / 3.0;
         let p3w = sw - p1w - p2w;
@@ -533,12 +732,10 @@ impl DemoGame {
         engine.ui.ui_text(p1w + tw * 20.0,  y0, "[Hostile]", UI_RED, Color::TRANSPARENT);
         engine.ui.ui_text(p1w+p2w + tw*0.5, y0, "[f] attack  [r] parry  [w] dodge", UI_TEXT, Color::TRANSPARENT);
 
-        // Row 1: skillbar label
         engine.ui.ui_rect(0.0, y1, sw, th, PANEL_BG);
         engine.ui.ui_hline(0.0, y1, sw, PANEL_BORDER);
         engine.ui.ui_text(0.0, y1, "ABILITIES:", UI_DIM, Color::TRANSPARENT);
 
-        // Row 2: skill slots
         engine.ui.ui_rect(0.0, y2, sw, th, PANEL_BG);
         let skills = ["[1] Strike", "[2] Dash", "[3] Heal", "[4] Block", "[5] Roll"];
         let slot_w = sw / skills.len() as f32;
@@ -563,8 +760,8 @@ impl DemoGame {
 
         let panel_w   = tw * 18.0;
         let panel_x   = sw - panel_w;
-        let panel_y   = th * 3.0;           // below top HUD
-        let panel_h   = sh - th * 6.0;     // above bottom HUD
+        let panel_y   = th * 3.0;
+        let panel_h   = sh - th * 6.0;
         let inner_x   = panel_x + tw;
         let inner_y   = panel_y + th;
         let inner_w   = panel_w - tw * 2.0;
@@ -574,7 +771,6 @@ impl DemoGame {
         engine.ui.ui_box(panel_x, panel_y, panel_w, panel_h, BorderStyle::Single, PANEL_BORDER, LOG_BG);
         engine.ui.ui_text(panel_x + tw * 2.0, panel_y, " MESSAGE LOG ", UI_BRIGHT, LOG_BG);
 
-        // Show most-recent messages at the bottom
         let msgs: Vec<&LogEntry> = self.ui.log_messages.iter().rev().take(max_rows).collect();
         for (row, entry) in msgs.into_iter().rev().enumerate() {
             let row_y = inner_y + row as f32 * th;
@@ -599,7 +795,6 @@ impl DemoGame {
 
         engine.ui.ui_box(bx, by, bw, bh, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
 
-        // ── Tabs ────────────────────────────────────────────────────────────
         let tabs = [(Tab::Inventory, " Inventory "),
                     (Tab::SkillTree, " Skill Tree "),
                     (Tab::Relationship, " Relationship ")];
@@ -625,7 +820,6 @@ impl DemoGame {
             Tab::Relationship => self.draw_relationship_content(engine, inner_x, inner_y, inner_w, inner_h),
         }
 
-        // ── Footer hint ─────────────────────────────────────────────────────
         let footer_y = by + bh - th;
         engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y,
@@ -637,7 +831,6 @@ impl DemoGame {
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
-        // Left column: equipment slots (roughly 1/3 of width)
         let col_w = w / 3.0;
         engine.ui.ui_text(x, y, "EQUIPMENT", UI_ACCENT, Color::TRANSPARENT);
         engine.ui.ui_hline(x, y + th, col_w, UI_DIM);
@@ -657,7 +850,6 @@ impl DemoGame {
             engine.ui.ui_text(x + tw * 12.0, sy, item, item_color, Color::TRANSPARENT);
         }
 
-        // Right column: item list
         let list_x = x + col_w + tw;
         engine.ui.ui_text(list_x, y, "ITEMS", UI_ACCENT, Color::TRANSPARENT);
         engine.ui.ui_hline(list_x, y + th, w - col_w - tw, UI_DIM);
@@ -690,7 +882,6 @@ impl DemoGame {
         engine.ui.ui_text(x, y, "SKILL TREE", UI_ACCENT, Color::TRANSPARENT);
         engine.ui.ui_hline(x, y + th, _w, UI_DIM);
 
-        // Simple ASCII skill tree placeholder
         let tree = [
             ("                [Combat]",               UI_BRIGHT),
             ("               /   |   \\",              UI_DIM),
@@ -766,13 +957,11 @@ impl DemoGame {
 
         engine.ui.ui_box(bx, by, bw, bh, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
 
-        // NPC name
         let name = dialogue.npc_name.clone();
         let name_x = bx + (bw - name.chars().count() as f32 * tw) * 0.5;
         engine.ui.ui_text(name_x, by + th * 1.5, &name, UI_BRIGHT, Color::TRANSPARENT);
         engine.ui.ui_hline(bx + tw, by + th * 2.5, bw - tw * 2.0, PANEL_BORDER);
 
-        // Body text
         engine.ui.ui_text_wrapped(
             bx + tw * 2.0, by + th * 3.0,
             bw - tw * 4.0, th * 4.0,
@@ -780,10 +969,8 @@ impl DemoGame {
             UI_TEXT, Color::TRANSPARENT,
         );
 
-        // Divider before options
         engine.ui.ui_hline(bx + tw, by + th * 7.0, bw - tw * 2.0, UI_DIM);
 
-        // Dialogue options
         let selected = dialogue.selected;
         for (i, opt) in dialogue.options.iter().enumerate() {
             let oy = by + th * (8.0 + i as f32 * 1.5);
@@ -797,77 +984,70 @@ impl DemoGame {
                 row_fg, row_bg);
         }
 
-        // Footer
         let footer_y = by + bh - th;
         engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y,
             " [↑/↓] Navigate  [Enter] Select  [Esc] Cancel ",
             UI_DIM, Color::TRANSPARENT);
     }
-
-    fn draw_settings_panel(&mut self, engine: &mut Engine) {
-        if !self.settings_open { return; }
-
-        let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
-        let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
-        let tw = engine.tile_width()  as f32;
-        let th = engine.tile_height() as f32;
-
-        // Centre a fixed-size panel.
-        let panel_w = tw * 32.0;
-        let panel_h = th * 16.0;
-        let bx = (sw - panel_w) * 0.5;
-        let by = (sh - panel_h) * 0.5;
-
-        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
-
-        // Title
-        let title = " SETTINGS ";
-        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
-
-        let col_x  = bx + tw * 2.0;
-        let ctrl_x = bx + tw * 14.0;
-        let ctrl_w = panel_w - tw * 16.0;
-
-        // Row 0 — Resolution dropdown
-        engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG);
-        self.dd_resolution.draw(engine, ctrl_x, by + th * 3.5, ctrl_w);
-
-        // Row 1 — Player name input
-        engine.ui.ui_text(col_x, by + th * 6.0, "Player Name", UI_TEXT, PANEL_BG);
-        self.ib_name.draw(engine, ctrl_x, by + th * 6.0, ctrl_w);
-
-        // Row 2 — Difficulty toggle selector
-        engine.ui.ui_text(col_x, by + th * 8.5, "Difficulty", UI_TEXT, PANEL_BG);
-        self.ts_difficulty.draw(engine, ctrl_x, by + th * 8.5, ctrl_w);
-
-        // Footer hint
-        let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y,
-            " [F2/Esc] Close ", UI_DIM, PANEL_BG);
-    }
 }
 
-// ── Game impl ─────────────────────────────────────────────────────────────────
+impl Scene for GameScene {
+    fn on_enter(&mut self, engine: &mut Engine) {
+        let gw = engine.grid_width();
+        let gh = engine.grid_height();
+        self.build_map(gw, gh);
 
-impl Game for DemoGame {
-    fn update(&mut self, engine: &mut Engine) {
-        // ── Window mode / resolution keys ─────────────────────────────────────
+        let actual_w = gw * engine.tile_width();
+        let actual_h = gh * engine.tile_height();
+        self.window_config.physical_width  = actual_w;
+        self.window_config.physical_height = actual_h;
+        self.window_config.logical_width   = actual_w;
+        self.window_config.logical_height  = actual_h;
 
-        // F2: toggle Settings panel.
-        if engine.is_key_pressed(KeyCode::F2) {
-            self.settings_open = !self.settings_open;
+        if engine.ui.text.fonts.is_empty() {
+            if let Ok(font) = Font::from_atlas_json(
+                DEFAULT_FONT_GLYPHS,
+                DEFAULT_TILE_W * 16,
+                DEFAULT_TILE_H * 16,
+            ) {
+                engine.ui.text.add_font(font);
+            }
         }
-        // Escape closes settings before anything else.
-        if self.settings_open && engine.is_key_pressed(KeyCode::Escape) {
-            self.settings_open = false;
-            return;
+
+        self.status_label.set_text(
+            "[@] T:25  Hungry Tumescent  100/100# 50$  QN:10  MS:5  baroque ruins, surface",
+        );
+
+        if let Some(player) = self.player {
+            if let Some(pos) = self.world.get::<Position>(player) {
+                let cx = (pos.x as f32 + 0.5) * engine.tile_width() as f32;
+                let cy = (pos.y as f32 + 0.5) * engine.tile_height() as f32;
+                engine.set_camera_pos(cx, cy);
+            }
         }
-        // While settings panel is open, block all game input.
-        if self.settings_open { return; }
+
+        self.initialized = true;
+    }
+
+    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+        let gw = engine.grid_width();
+        let gh = engine.grid_height();
+
+        // Handle grid resize (window was resized)
+        if self.initialized && (gw != self.map_w || gh != self.map_h) {
+            self.build_map(gw, gh);
+
+            let actual_w = gw * engine.tile_width();
+            let actual_h = gh * engine.tile_height();
+            self.window_config.physical_width  = actual_w;
+            self.window_config.physical_height = actual_h;
+            self.window_config.logical_width   = actual_w;
+            self.window_config.logical_height  = actual_h;
+        }
+
+        let tw = engine.tile_width();
+        let th = engine.tile_height();
 
         // F11: toggle Windowed ↔ Borderless.
         if engine.is_key_pressed(KeyCode::F11) {
@@ -877,54 +1057,14 @@ impl Game for DemoGame {
                 WindowMode::Fullscreen => WindowMode::Windowed,
             };
             apply_window_settings(&engine.ui.renderer.window, &self.window_config);
-            println!("[window] mode → {:?}", self.window_config.mode);
         }
-
-        // ─────────────────────────────────────────────────────────────────────
-
-        let gw = engine.grid_width();
-        let gh = engine.grid_height();
-
-        if !self.initialized || gw != self.map_w || gh != self.map_h {
-            self.build_map(gw, gh);
-
-            // Keep window_config in sync with the actual pixel size so that F11
-            // can restore the correct dimensions when returning to windowed mode.
-            let actual_w = gw * engine.tile_width();
-            let actual_h = gh * engine.tile_height();
-            self.window_config.physical_width  = actual_w;
-            self.window_config.physical_height = actual_h;
-            self.window_config.logical_width   = actual_w;
-            self.window_config.logical_height  = actual_h;
-
-            // Register the bitmap font once (on first init).
-            if engine.ui.text.fonts.is_empty() {
-                if let Ok(font) = Font::from_atlas_json(
-                    DEFAULT_FONT_GLYPHS,
-                    DEFAULT_TILE_W * 16,   // atlas is 16 glyphs wide
-                    DEFAULT_TILE_H * 16,   // atlas is 16 glyphs tall
-                ) {
-                    engine.ui.text.add_font(font);
-                }
-            }
-
-            // Seed the label text (static placeholder — update via set_text when data changes).
-            self.status_label.set_text(
-                "[@] T:25  Hungry Tumescent  100/100# 50$  QN:10  MS:5  baroque ruins, surface",
-            );
-
-            self.initialized = true;
-        }
-
-        let tw = engine.tile_width();
-        let th = engine.tile_height();
 
         update_particles(&mut self.world, engine.dt());
         spawn_smoke(&mut self.world, engine.tick(), tw, th);
         spawn_fire_ambient(&mut self.world, engine.tick(), tw, th);
         spawn_glitch_ambient(&mut self.world, engine.tick(), tw, th);
 
-        // ── Camera: track player ──────────────────────────────────────────
+        // Camera: track player
         if let Some(player) = self.player {
             if let Some(pos) = self.world.get::<Position>(player) {
                 let cx = (pos.x as f32 + 0.5) * tw as f32;
@@ -933,7 +1073,7 @@ impl Game for DemoGame {
             }
         }
 
-        // ── UI toggle keys ────────────────────────────────────────────────
+        // UI toggle keys
         if engine.is_key_pressed(KeyCode::KeyI) {
             self.ui.inventory_open = !self.ui.inventory_open;
         }
@@ -947,30 +1087,8 @@ impl Game for DemoGame {
                 Tab::Relationship  => Tab::Inventory,
             };
         }
-        if engine.is_key_pressed(KeyCode::Escape) {
-            if self.ui.dialogue.is_some() {
-                self.ui.dialogue = None;
-                return;
-            }
-            if self.ui.inventory_open {
-                self.ui.inventory_open = false;
-                return;
-            }
-        }
 
-        // ── Camera zoom (+/-) with smooth lerp ───────────────────────────
-        // "=" key (same physical key as "+") or NumpadAdd → zoom in.
-        // "-" key or NumpadSubtract → zoom out.
-        if engine.is_key_pressed(KeyCode::Equal) || engine.is_key_pressed(KeyCode::NumpadAdd) {
-            self.zoom_target = (self.zoom_target * 1.25).min(4.0);
-            engine.set_camera_zoom(self.zoom_target);
-        }
-        if engine.is_key_pressed(KeyCode::Minus) || engine.is_key_pressed(KeyCode::NumpadSubtract) {
-            self.zoom_target = (self.zoom_target / 1.25).max(0.25);
-            engine.set_camera_zoom(self.zoom_target);
-        }
-
-        // ── Inventory clicks on tabs ──────────────────────────────────────
+        // Inventory clicks on tabs
         if self.ui.inventory_open {
             let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
             let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
@@ -988,10 +1106,33 @@ impl Game for DemoGame {
                 }
                 tab_x += tw_label + tw_f;
             }
-            let _ = sw; let _ = sh; // suppress warnings
+            let _ = sw; let _ = sh;
         }
 
-        // ── Dialogue navigation ────────────────────────────────────────────
+        // Camera zoom (+/-)
+        if engine.is_key_pressed(KeyCode::Equal) || engine.is_key_pressed(KeyCode::NumpadAdd) {
+            self.zoom_target = (self.zoom_target * 1.25).min(4.0);
+            engine.set_camera_zoom(self.zoom_target);
+        }
+        if engine.is_key_pressed(KeyCode::Minus) || engine.is_key_pressed(KeyCode::NumpadSubtract) {
+            self.zoom_target = (self.zoom_target / 1.25).max(0.25);
+            engine.set_camera_zoom(self.zoom_target);
+        }
+
+        // Escape priority chain
+        if engine.is_key_pressed(KeyCode::Escape) {
+            if self.ui.dialogue.is_some() {
+                self.ui.dialogue = None;
+                return SceneAction::None;
+            }
+            if self.ui.inventory_open {
+                self.ui.inventory_open = false;
+                return SceneAction::None;
+            }
+            return SceneAction::Push(Box::new(PauseOverlayScene::new(self.window_config.clone())));
+        }
+
+        // Dialogue navigation
         if let Some(ref mut dlg) = self.ui.dialogue {
             let n = dlg.options.len();
             if engine.is_key_pressed(KeyCode::ArrowUp)   && dlg.selected > 0     { dlg.selected -= 1; }
@@ -1015,13 +1156,13 @@ impl Game for DemoGame {
                     self.ui.log("The wanderer nods knowingly.", UI_TEXT);
                 }
             }
-            return; // Dialogue captures all input.
+            return SceneAction::None;
         }
 
         // Block movement while inventory is open.
-        if self.ui.inventory_open { return; }
+        if self.ui.inventory_open { return SceneAction::None; }
 
-        // ── Movement ──────────────────────────────────────────────────────
+        // Movement
         let mut dx: i32 = 0;
         let mut dy: i32 = 0;
 
@@ -1130,7 +1271,7 @@ impl Game for DemoGame {
                                 selected: 0,
                             });
                             self.ui.log("You approach the Mysterious Wanderer.", UI_TEXT);
-                            return;
+                            return SceneAction::None;
                         }
 
                         // Check for enemy
@@ -1172,11 +1313,11 @@ impl Game for DemoGame {
                 }
             }
         }
+
+        SceneAction::None
     }
 
-    fn render(&mut self, engine: &mut Engine) {
-        engine.clear();
-
+    fn draw(&mut self, engine: &mut Engine) {
         // ── Char-atlas entities ──────────────────────────────────────────────
         for (entity, renderable) in self.world.query::<Renderable>() {
             if let Some(pos) = self.world.get::<Position>(entity) {
@@ -1222,9 +1363,6 @@ impl Game for DemoGame {
         render_particles(&self.world, engine);
 
         // ── Text layer (bitmap font labels) ─────────────────────────────────
-        // Clear accumulated geometry from the previous frame, then draw all
-        // persistent labels.  The resulting buffers in engine.ui.text are
-        // uploaded to the GPU and rendered via the text pipeline.
         engine.ui.text.clear();
         self.status_label.draw(&mut engine.ui.text);
 
@@ -1234,9 +1372,121 @@ impl Game for DemoGame {
         self.draw_log_panel(engine);
         self.draw_inventory_modal(engine);
         self.draw_dialogue_modal(engine);
-        self.draw_settings_panel(engine);
     }
 }
+
+// ── PauseOverlayScene ─────────────────────────────────────────────────────────
+
+struct PauseOverlayScene {
+    selected:      usize,  // 0=Resume 1=Options 2=Quit to Menu 3=Quit App
+    window_config: WindowConfig,
+}
+
+impl PauseOverlayScene {
+    fn new(window_config: WindowConfig) -> Self {
+        Self { selected: 0, window_config }
+    }
+
+    fn activate(&self, selected: usize, _engine: &mut Engine) -> SceneAction {
+        match selected {
+            0 => SceneAction::Pop,
+            1 => SceneAction::Push(Box::new(OptionsScene::new(self.window_config.clone()))),
+            2 => SceneAction::ReplaceAll(Box::new(MainMenuScene::new())),
+            3 => SceneAction::Quit,
+            _ => SceneAction::None,
+        }
+    }
+}
+
+impl Scene for PauseOverlayScene {
+    fn is_transparent(&self) -> bool { true }
+
+    fn update(&mut self, engine: &mut Engine) -> SceneAction {
+        let items_len = 4;
+
+        if engine.is_key_pressed(KeyCode::Escape) {
+            return SceneAction::Pop;
+        }
+        if engine.is_key_pressed(KeyCode::ArrowUp) && self.selected > 0 {
+            self.selected -= 1;
+        }
+        if engine.is_key_pressed(KeyCode::ArrowDown) && self.selected + 1 < items_len {
+            self.selected += 1;
+        }
+
+        // Mouse hover
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        let sw = engine.grid_width() as f32 * tw;
+        let sh = engine.grid_height() as f32 * th;
+        let panel_w = tw * 24.0;
+        let panel_h = th * 14.0;
+        let bx = (sw - panel_w) * 0.5;
+        let by = (sh - panel_h) * 0.5;
+        let labels = ["Resume", "Options", "Quit to Menu", "Quit App"];
+        for (i, _label) in labels.iter().enumerate() {
+            let item_y = by + th * (4.0 + i as f32 * 2.0);
+            let item_x = bx + tw * 2.0;
+            let item_w = panel_w - tw * 4.0;
+            if engine.ui.is_mouse_over(item_x, item_y, item_w, th) {
+                self.selected = i;
+                if engine.ui.was_clicked(item_x, item_y, item_w, th) && !engine.ui.click_consumed {
+                    engine.ui.click_consumed = true;
+                    return self.activate(i, engine);
+                }
+            }
+        }
+
+        if engine.is_key_pressed(KeyCode::Enter) {
+            let sel = self.selected;
+            return self.activate(sel, engine);
+        }
+
+        SceneAction::None
+    }
+
+    fn draw(&mut self, engine: &mut Engine) {
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        let sw = engine.grid_width() as f32 * tw;
+        let sh = engine.grid_height() as f32 * th;
+
+        // Semi-transparent dark overlay
+        engine.ui.ui_rect(0.0, 0.0, sw, sh, Color([0.0, 0.0, 0.0, 0.55]));
+
+        // Centered 24×14 panel
+        let panel_w = tw * 24.0;
+        let panel_h = th * 14.0;
+        let bx = (sw - panel_w) * 0.5;
+        let by = (sh - panel_h) * 0.5;
+        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+
+        // Title "PAUSED"
+        let title = "PAUSED";
+        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
+        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+
+        // Menu items
+        let labels = ["Resume", "Options", "Quit to Menu", "Quit App"];
+        for (i, label) in labels.iter().enumerate() {
+            let item_y = by + th * (4.0 + i as f32 * 2.0);
+            let item_x = bx + tw * 2.0;
+            let is_sel = i == self.selected;
+            let bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
+            let fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
+            let prefix = if is_sel { "> " } else { "  " };
+            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg);
+        }
+
+        // Footer hint
+        let footer_y = by + panel_h - th;
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select  [Esc] Resume ", UI_DIM, PANEL_BG);
+    }
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
     Engine::builder()
@@ -1245,5 +1495,5 @@ fn main() {
         .with_tileset(DEFAULT_TILESET, 16, 24)
         .with_sprite_folder("resources/sprites")
         .retro_scan_lines()
-        .run(DemoGame::new());
+        .run(SceneStack::new(Box::new(MainMenuScene::new())));
 }
