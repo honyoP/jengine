@@ -1,3 +1,4 @@
+pub mod camera;
 pub mod ecs;
 pub mod engine;
 pub mod geometry;

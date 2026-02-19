@@ -9,6 +9,7 @@ pub use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
+use crate::camera::Camera;
 use crate::ui::UI;
 use crate::ecs::Entity;
 use crate::renderer::Renderer;
@@ -167,11 +168,17 @@ pub struct Engine {
     sprite_commands: Vec<SpriteCommand>,
     particle_vertices: Vec<ParticleVertex>,
     active_animations: Vec<ActiveAnimation>,
+    /// 2D camera — tracks position, zoom, and shake.
+    pub(crate) camera: Camera,
     dt: f32,
     tick: u64,
     keys_held: HashSet<KeyCode>,
     keys_pressed: HashSet<KeyCode>,
     keys_released: HashSet<KeyCode>,
+    /// Printable characters typed this frame (populated from `KeyEvent.text`).
+    /// Cleared at the start of each frame alongside `keys_pressed`.
+    /// Widgets drain this during `draw()` to implement text input.
+    pub chars_typed: Vec<char>,
 }
 
 impl Engine {
@@ -184,6 +191,14 @@ impl Engine {
         let grid_w = size.width / tile_w;
         let grid_h = size.height / tile_h;
         let grid_size = (grid_w * grid_h) as usize;
+
+        // Default camera: centred on the screen so the world view matches the
+        // old fixed projection (i.e. shows [0..w] × [0..h] at zoom = 1).
+        let camera = Camera::new(
+            size.width as f32 / 2.0,
+            size.height as f32 / 2.0,
+        );
+
         let ui = UI::new(renderer, tile_w, tile_h);
         Self {
             ui,
@@ -194,11 +209,13 @@ impl Engine {
             sprite_commands: Vec::new(),
             particle_vertices: Vec::new(),
             active_animations: Vec::new(),
+            camera,
             dt: 0.0,
             tick: 0,
             keys_held: HashSet::new(),
             keys_pressed: HashSet::new(),
             keys_released: HashSet::new(),
+            chars_typed: Vec::new(),
         }
     }
 
@@ -214,6 +231,31 @@ impl Engine {
     pub fn is_key_held(&self, key: KeyCode) -> bool { self.keys_held.contains(&key) }
     pub fn is_key_pressed(&self, key: KeyCode) -> bool { self.keys_pressed.contains(&key) }
     pub fn is_key_released(&self, key: KeyCode) -> bool { self.keys_released.contains(&key) }
+
+    // ── Camera API ─────────────────────────────────────────────────────────
+
+    /// Move the camera so that world-pixel coordinate `(x, y)` is centred on screen.
+    pub fn set_camera_pos(&mut self, x: f32, y: f32) {
+        self.camera.position = glam::Vec2::new(x, y);
+    }
+
+    /// Set the zoom target.  The camera smoothly lerps toward this value each frame.
+    /// Values > 1.0 zoom in; values < 1.0 zoom out.  Clamped to a minimum of 0.05.
+    pub fn set_camera_zoom(&mut self, zoom: f32) {
+        self.camera.target_zoom = zoom.max(0.05);
+    }
+
+    /// Return the current zoom level (instantaneous, after lerp).
+    pub fn camera_zoom(&self) -> f32 { self.camera.zoom }
+
+    /// Return the zoom target (what `set_camera_zoom` last set).
+    pub fn camera_target_zoom(&self) -> f32 { self.camera.target_zoom }
+
+    /// Trigger a camera shake.  `intensity` is peak displacement in pixels.
+    /// The shake lasts 0.5 s and decays linearly.
+    pub fn camera_shake(&mut self, intensity: f32) {
+        self.camera.shake(intensity);
+    }
 
     // ── Grid drawing (character / char-atlas path) ─────────────────────────
 
@@ -310,15 +352,27 @@ impl Engine {
         });
     }
 
-    /// Advance all active animations by `dt` seconds and remove expired ones.
+    /// Advance all active animations and camera state by `dt` seconds.
     pub(crate) fn tick_animations(&mut self, dt: f32) {
         for a in &mut self.active_animations {
             a.elapsed += dt;
         }
         self.active_animations.retain(|a| a.elapsed < a.duration);
+        self.camera.tick(dt);
     }
 
     // ── Internal rendering helpers ─────────────────────────────────────────
+
+    /// Upload the current camera view-projection matrix to the GPU.
+    /// Must be called once per frame before `renderer.render()`.
+    pub(crate) fn sync_camera(&mut self) {
+        let size = self.ui.renderer.window.inner_size();
+        let uniform = self.camera.build_view_proj(
+            size.width as f32,
+            size.height as f32,
+        );
+        self.ui.renderer.update_camera(&uniform);
+    }
 
     /// Build vertex data for the current frame.
     fn build_vertices(&self) -> (Vec<TileVertex>, Vec<TileVertex>) {
@@ -589,6 +643,7 @@ impl ApplicationHandler for App {
                 engine.tick_animations(elapsed);
                 engine.keys_pressed.clear();
                 engine.keys_released.clear();
+                engine.chars_typed.clear();
 
                 engine.sprite_commands.clear();
                 engine.particle_vertices.clear();
@@ -598,6 +653,10 @@ impl ApplicationHandler for App {
                 let (char_verts, sprite_verts) = engine.build_vertices();
                 let particle_verts = std::mem::take(&mut engine.particle_vertices);
                 let ui_verts = std::mem::take(&mut engine.ui.ui_vertices);
+
+                // Upload the current camera matrix to the GPU before rendering.
+                engine.sync_camera();
+
                 match engine.ui.renderer.render(&char_verts, &sprite_verts, &particle_verts, &ui_verts) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
@@ -607,6 +666,7 @@ impl ApplicationHandler for App {
                     Err(e) => eprintln!("render error: {e}"),
                 }
                 engine.ui.mouse_clicked = false;
+                engine.ui.click_consumed = false;
             }
 
             WindowEvent::KeyboardInput {
@@ -614,6 +674,7 @@ impl ApplicationHandler for App {
                     KeyEvent {
                         physical_key: PhysicalKey::Code(code),
                         state,
+                        ref text,
                         ..
                     },
                 ..
@@ -621,6 +682,14 @@ impl ApplicationHandler for App {
                 ElementState::Pressed => {
                     if engine.keys_held.insert(code) {
                         engine.keys_pressed.insert(code);
+                    }
+                    // Capture printable characters for text-input widgets.
+                    if let Some(t) = text {
+                        for ch in t.chars() {
+                            if !ch.is_control() {
+                                engine.chars_typed.push(ch);
+                            }
+                        }
                     }
                 }
                 ElementState::Released => {

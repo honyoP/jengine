@@ -1,3 +1,5 @@
+pub mod widgets;
+
 // ── UI types & pure helpers ──────────────────────────────────────────────────
 
 use crate::engine::Color;
@@ -152,6 +154,10 @@ pub struct UI {
     pub mouse_clicked: bool,
     /// True while the left mouse button is held.
     pub mouse_held: bool,
+    /// Set to `true` by any widget that fully handles a mouse click this frame.
+    /// Game code should check this before acting on clicks to avoid double-firing.
+    /// Reset to `false` at the end of every frame.
+    pub click_consumed: bool,
     /// Variable-width bitmap font layer; fonts registered here, labels draw into it.
     pub text: TextLayer,
 }
@@ -166,6 +172,7 @@ impl UI {
             mouse_pos: [0.0, 0.0],
             mouse_clicked: false,
             mouse_held: false,
+            click_consumed: false,
             text: TextLayer::new(),
         }
     }

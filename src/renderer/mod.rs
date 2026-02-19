@@ -18,6 +18,8 @@ use pipeline::{TilePipeline, TileVertex, create_tile_pipeline, orthographic_proj
 use scanline_pipeline::{ScanlinePass, create_scanline_pass, resize_scanline_pass};
 use sprite_atlas::SpriteAtlas;
 
+use crate::camera::CameraUniform;
+
 pub struct Renderer {
     pub window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -26,8 +28,12 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     tile_pipeline: TilePipeline,
     particle_pipeline: ParticlePipeline,
+    /// Static orthographic projection (no camera) — used exclusively by the UI pass.
     projection_buffer: wgpu::Buffer,
     projection_bind_group: wgpu::BindGroup,
+    /// Camera view-projection buffer — used by world passes (char, sprite, particle).
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     /// Bind group for the character/glyph atlas (always present).
     atlas_bind_group: wgpu::BindGroup,
     /// Bind group for the optional sprite atlas (None until load_sprite_folder is called).
@@ -99,6 +105,7 @@ impl Renderer {
             &tile_pipeline.projection_bind_group_layout,
         );
 
+        // ── Static UI projection buffer (no camera transform) ─────────────
         let proj = orthographic_projection(config.width as f32, config.height as f32);
         let projection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("projection_buffer"),
@@ -112,6 +119,28 @@ impl Renderer {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: projection_buffer.as_entire_binding(),
+            }],
+        });
+
+        // ── Camera view-projection buffer (world passes) ──────────────────
+        // Initialised to the identity ortho so the first frame looks correct
+        // even before Camera::build_view_proj is called.
+        let cam_uniform = CameraUniform::identity_ortho(
+            config.width as f32,
+            config.height as f32,
+        );
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera_buffer"),
+            contents: bytemuck::cast_slice(&[cam_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera_bg"),
+            layout: &tile_pipeline.projection_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
             }],
         });
 
@@ -146,6 +175,8 @@ impl Renderer {
             particle_pipeline,
             projection_buffer,
             projection_bind_group,
+            camera_buffer,
+            camera_bind_group,
             atlas_bind_group,
             sprite_atlas_bind_group: None,
             atlas,
@@ -189,6 +220,7 @@ impl Renderer {
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
 
+        // Keep the UI projection up-to-date with the window size.
         let proj = orthographic_projection(new_size.width as f32, new_size.height as f32);
         self.queue
             .write_buffer(&self.projection_buffer, 0, bytemuck::cast_slice(&proj));
@@ -198,6 +230,16 @@ impl Renderer {
         }
     }
 
+    /// Upload a new camera view-projection matrix to the GPU.
+    /// Call this once per frame (after `Camera::tick`, before `render`).
+    pub fn update_camera(&mut self, uniform: &CameraUniform) {
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(std::slice::from_ref(uniform)),
+        );
+    }
+
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
@@ -205,10 +247,14 @@ impl Renderer {
     /// Render one frame.
     ///
     /// Draw order within the single render pass:
-    /// 1. `char_verts`     — character atlas (bg solid fills + char glyphs)
-    /// 2. `sprite_verts`   — sprite atlas (static and animated sprites)
-    /// 3. `particle_verts` — particle pipeline
-    /// 4. `ui_verts`       — UI overlay (char atlas, always on top, Layer 2)
+    /// 1. `char_verts`     — character atlas (bg solid fills + char glyphs) [camera]
+    /// 2. `sprite_verts`   — sprite atlas (static and animated sprites)     [camera]
+    /// 3. `particle_verts` — particle pipeline                               [camera]
+    /// 4. `ui_verts`       — UI overlay (char atlas, always on top, Layer 2) [screen]
+    ///
+    /// Passes 1–3 use the camera view-projection (`camera_bind_group`) so they
+    /// scroll/zoom with the camera.  Pass 4 uses the plain orthographic projection
+    /// (`projection_bind_group`) so UI stays fixed on screen regardless of camera.
     ///
     /// The UI vertex buffer is persistent and only uploaded to the GPU when
     /// the vertex content changes (FNV-1a hash-based invalidation).
@@ -272,9 +318,9 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.05,
-                            b: 0.08,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -285,7 +331,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // ── Pass 1: character atlas (bg grid + char glyph grid) ───────
+            // ── Pass 1: character atlas (bg grid + char glyph grid) [camera] ─
             if !char_verts.is_empty() {
                 let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("char_vertex_buffer"),
@@ -293,13 +339,13 @@ impl Renderer {
                     usage: wgpu::BufferUsages::VERTEX,
                 });
                 pass.set_pipeline(&self.tile_pipeline.render_pipeline);
-                pass.set_bind_group(0, &self.projection_bind_group, &[]);
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 pass.set_bind_group(1, &self.atlas_bind_group, &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.draw(0..char_verts.len() as u32, 0..1);
             }
 
-            // ── Pass 2: sprite atlas (static + animated sprites) ──────────
+            // ── Pass 2: sprite atlas (static + animated sprites) [camera] ────
             if !sprite_verts.is_empty() {
                 if let Some(sprite_bg) = &self.sprite_atlas_bind_group {
                     let vbuf =
@@ -309,14 +355,14 @@ impl Renderer {
                             usage: wgpu::BufferUsages::VERTEX,
                         });
                     pass.set_pipeline(&self.tile_pipeline.render_pipeline);
-                    pass.set_bind_group(0, &self.projection_bind_group, &[]);
+                    pass.set_bind_group(0, &self.camera_bind_group, &[]);
                     pass.set_bind_group(1, sprite_bg, &[]);
                     pass.set_vertex_buffer(0, vbuf.slice(..));
                     pass.draw(0..sprite_verts.len() as u32, 0..1);
                 }
             }
 
-            // ── Pass 3: particles ─────────────────────────────────────────
+            // ── Pass 3: particles [camera] ────────────────────────────────────
             if !particle_verts.is_empty() {
                 let pbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("particle_vertex_buffer"),
@@ -324,12 +370,13 @@ impl Renderer {
                     usage: wgpu::BufferUsages::VERTEX,
                 });
                 pass.set_pipeline(&self.particle_pipeline.render_pipeline);
-                pass.set_bind_group(0, &self.projection_bind_group, &[]);
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 pass.set_vertex_buffer(0, pbuf.slice(..));
                 pass.draw(0..particle_verts.len() as u32, 0..1);
             }
 
-            // ── Pass 4: UI overlay (char atlas, always on top) ────────────
+            // ── Pass 4: UI overlay (char atlas, always on top) [screen] ──────
+            // Uses the plain projection_bind_group so UI ignores the camera.
             if !ui_verts.is_empty() {
                 if let Some(ui_buf) = &self.ui_vertex_buffer {
                     let count = ui_verts.len() as u32;

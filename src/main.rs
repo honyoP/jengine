@@ -5,6 +5,7 @@ use std::f32::consts::TAU;
 
 use jengine::ecs::{Entity, World};
 use jengine::ui::{BorderStyle, Label};
+use jengine::ui::widgets::{Dropdown, InputBox, ToggleSelector};
 use jengine::engine::{
     AnimationType, Color, Engine, Game, KeyCode,
 };
@@ -313,6 +314,16 @@ struct DemoGame {
     status_label:  Label,
     /// Active window configuration; updated by F11 / 1-2-3 key bindings.
     window_config: WindowConfig,
+    /// Camera zoom target (smooth lerp handled by the camera system).
+    zoom_target:   f32,
+    /// Settings panel toggle (F2).
+    settings_open:    bool,
+    /// Settings — "Resolution" dropdown.
+    dd_resolution:    Dropdown,
+    /// Settings — "Player Name" input box.
+    ib_name:          InputBox,
+    /// Settings — "Difficulty" toggle selector.
+    ts_difficulty:    ToggleSelector,
 }
 
 impl DemoGame {
@@ -328,6 +339,11 @@ impl DemoGame {
             // font_id 0; actual font registered into engine.ui.text on first update.
             status_label:  Label::new([0.0, 0.0], 0, DEFAULT_TILE_H as f32, UI_TEXT.0),
             window_config: WindowConfig::default(),
+            zoom_target:   1.0,
+            settings_open:  false,
+            dd_resolution:  Dropdown::new(["1280×720", "1920×1080", "2560×1440", "3840×2160"]),
+            ib_name:        InputBox::new(20),
+            ts_difficulty:  ToggleSelector::new(["Story", "Normal", "Hard", "Nightmare"]),
         }
     }
 
@@ -788,6 +804,51 @@ impl DemoGame {
             " [↑/↓] Navigate  [Enter] Select  [Esc] Cancel ",
             UI_DIM, Color::TRANSPARENT);
     }
+
+    fn draw_settings_panel(&mut self, engine: &mut Engine) {
+        if !self.settings_open { return; }
+
+        let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
+        let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
+        let tw = engine.tile_width()  as f32;
+        let th = engine.tile_height() as f32;
+
+        // Centre a fixed-size panel.
+        let panel_w = tw * 32.0;
+        let panel_h = th * 16.0;
+        let bx = (sw - panel_w) * 0.5;
+        let by = (sh - panel_h) * 0.5;
+
+        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+
+        // Title
+        let title = " SETTINGS ";
+        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
+        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+
+        let col_x  = bx + tw * 2.0;
+        let ctrl_x = bx + tw * 14.0;
+        let ctrl_w = panel_w - tw * 16.0;
+
+        // Row 0 — Resolution dropdown
+        engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG);
+        self.dd_resolution.draw(engine, ctrl_x, by + th * 3.5, ctrl_w);
+
+        // Row 1 — Player name input
+        engine.ui.ui_text(col_x, by + th * 6.0, "Player Name", UI_TEXT, PANEL_BG);
+        self.ib_name.draw(engine, ctrl_x, by + th * 6.0, ctrl_w);
+
+        // Row 2 — Difficulty toggle selector
+        engine.ui.ui_text(col_x, by + th * 8.5, "Difficulty", UI_TEXT, PANEL_BG);
+        self.ts_difficulty.draw(engine, ctrl_x, by + th * 8.5, ctrl_w);
+
+        // Footer hint
+        let footer_y = by + panel_h - th;
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y,
+            " [F2/Esc] Close ", UI_DIM, PANEL_BG);
+    }
 }
 
 // ── Game impl ─────────────────────────────────────────────────────────────────
@@ -795,6 +856,18 @@ impl DemoGame {
 impl Game for DemoGame {
     fn update(&mut self, engine: &mut Engine) {
         // ── Window mode / resolution keys ─────────────────────────────────────
+
+        // F2: toggle Settings panel.
+        if engine.is_key_pressed(KeyCode::F2) {
+            self.settings_open = !self.settings_open;
+        }
+        // Escape closes settings before anything else.
+        if self.settings_open && engine.is_key_pressed(KeyCode::Escape) {
+            self.settings_open = false;
+            return;
+        }
+        // While settings panel is open, block all game input.
+        if self.settings_open { return; }
 
         // F11: toggle Windowed ↔ Borderless.
         if engine.is_key_pressed(KeyCode::F11) {
@@ -851,6 +924,15 @@ impl Game for DemoGame {
         spawn_fire_ambient(&mut self.world, engine.tick(), tw, th);
         spawn_glitch_ambient(&mut self.world, engine.tick(), tw, th);
 
+        // ── Camera: track player ──────────────────────────────────────────
+        if let Some(player) = self.player {
+            if let Some(pos) = self.world.get::<Position>(player) {
+                let cx = (pos.x as f32 + 0.5) * tw as f32;
+                let cy = (pos.y as f32 + 0.5) * th as f32;
+                engine.set_camera_pos(cx, cy);
+            }
+        }
+
         // ── UI toggle keys ────────────────────────────────────────────────
         if engine.is_key_pressed(KeyCode::KeyI) {
             self.ui.inventory_open = !self.ui.inventory_open;
@@ -874,6 +956,18 @@ impl Game for DemoGame {
                 self.ui.inventory_open = false;
                 return;
             }
+        }
+
+        // ── Camera zoom (+/-) with smooth lerp ───────────────────────────
+        // "=" key (same physical key as "+") or NumpadAdd → zoom in.
+        // "-" key or NumpadSubtract → zoom out.
+        if engine.is_key_pressed(KeyCode::Equal) || engine.is_key_pressed(KeyCode::NumpadAdd) {
+            self.zoom_target = (self.zoom_target * 1.25).min(4.0);
+            engine.set_camera_zoom(self.zoom_target);
+        }
+        if engine.is_key_pressed(KeyCode::Minus) || engine.is_key_pressed(KeyCode::NumpadSubtract) {
+            self.zoom_target = (self.zoom_target / 1.25).max(0.25);
+            engine.set_camera_zoom(self.zoom_target);
         }
 
         // ── Inventory clicks on tabs ──────────────────────────────────────
@@ -1001,6 +1095,7 @@ impl Game for DemoGame {
                         if on_glitch {
                             engine.play_animation(player, AnimationType::Shiver { magnitude: 3.5 });
                             spawn_glitch_burst(&mut self.world, npx, npy, th, engine.tick());
+                            engine.camera_shake(10.0);
                             self.ui.log("Reality flickers around you.", UI_ACCENT);
                         }
 
@@ -1139,6 +1234,7 @@ impl Game for DemoGame {
         self.draw_log_panel(engine);
         self.draw_inventory_modal(engine);
         self.draw_dialogue_modal(engine);
+        self.draw_settings_panel(engine);
     }
 }
 

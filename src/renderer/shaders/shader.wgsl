@@ -17,8 +17,12 @@ struct VertexOutput {
     @location(3) layer_id: f32,
 };
 
+struct CameraUniform {
+    view_proj: mat4x4<f32>,
+};
+
 @group(0) @binding(0)
-var<uniform> projection: mat4x4<f32>;
+var<uniform> camera: CameraUniform;
 
 @group(1) @binding(0)
 var atlas_texture: texture_2d<f32>;
@@ -36,7 +40,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     if in.layer_id > 0.75 {
         offset = in.v_offset;
     }
-    out.clip_position = projection * vec4<f32>(in.position + offset, 0.0, 1.0);
+    out.clip_position = camera.view_proj * vec4<f32>(in.position + offset, 0.0, 1.0);
     out.uv = in.uv;
     out.fg_color = in.fg_color;
     out.bg_color = in.bg_color;
