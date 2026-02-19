@@ -42,7 +42,7 @@ pub fn create_tile_pipeline(
 ) -> TilePipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("tile_shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader.wgsl").into()),
     });
 
     let projection_bind_group_layout =

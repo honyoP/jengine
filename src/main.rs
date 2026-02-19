@@ -1,3 +1,5 @@
+// I am a very lazy person, so this demo wasn't actually built by me, but by Claude Opus 4.6. If
+// you stumble upon something extremely nasty, don't blame me. Thanks.
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
@@ -7,6 +9,7 @@ use jengine::engine::{
     AnimationType, Color, Engine, Game, KeyCode,
 };
 use jengine::renderer::text::Font;
+use jengine::window::{WindowConfig, WindowMode, apply_window_settings};
 use jengine::{DEFAULT_TILESET, DEFAULT_FONT_GLYPHS, DEFAULT_TILE_W, DEFAULT_TILE_H};
 
 // ── Palette ─────────────────────────────────────────────────────────────────
@@ -35,6 +38,7 @@ struct Wall;
 struct Enemy;
 struct BigEnemy;
 struct Size { w: u32, h: u32 }
+struct Sprite { sprite_name: String }
 
 /// NPC that opens a dialogue when bumped.
 struct DialogueNpc;
@@ -307,6 +311,8 @@ struct DemoGame {
     ui:            UiState,
     /// Persistent label for the top status bar, rendered via the bitmap font.
     status_label:  Label,
+    /// Active window configuration; updated by F11 / 1-2-3 key bindings.
+    window_config: WindowConfig,
 }
 
 impl DemoGame {
@@ -321,6 +327,7 @@ impl DemoGame {
             ui:            UiState::new(),
             // font_id 0; actual font registered into engine.ui.text on first update.
             status_label:  Label::new([0.0, 0.0], 0, DEFAULT_TILE_H as f32, UI_TEXT.0),
+            window_config: WindowConfig::default(),
         }
     }
 
@@ -336,8 +343,11 @@ impl DemoGame {
         self.map_h = h;
         let mut solids: Vec<(u32, u32)> = Vec::new();
 
-        for x in 0..w { solids.push((x, 0)); solids.push((x, h - 1)); }
-        for y in 1..h - 1 { solids.push((0, y)); solids.push((w - 1, y)); }
+        for x in 0..w { solids.push((x, 3)); solids.push((x, h - 4)); }
+        for y in 1..h {
+            if y < 4 { continue; }
+            solids.push((0, y)); solids.push((w - 1, y));
+        }
 
         if w > 6 && h > 4 {
             let wall_y = h / 3;
@@ -353,12 +363,13 @@ impl DemoGame {
             self.world.insert(wall, Position { x, y });
             self.world.insert(wall, Solid);
             self.world.insert(wall, Wall);
+            self.world.insert(wall, Sprite {sprite_name: "wall".to_string() });
         }
 
         let torch_spots: [(u32, u32); 3] = [
-            (2, 2),
-            (w.saturating_sub(3), 2),
-            (2, h.saturating_sub(3)),
+            (5, 5),
+            (w.saturating_sub(5), 5),
+            (5, h.saturating_sub(5)),
         ];
         for &(tx, ty) in &torch_spots {
             if !solids.contains(&(tx, ty)) {
@@ -394,6 +405,7 @@ impl DemoGame {
             self.world.insert(en, Position { x: ex, y: ey });
             self.world.insert(en, Solid);
             self.world.insert(en, Enemy);
+            self.world.insert(en, Sprite {sprite_name: "small_enemy".to_string() });
         }
 
         let bx = w / 3;
@@ -404,6 +416,7 @@ impl DemoGame {
             self.world.insert(be, Size { w: 3, h: 3 });
             self.world.insert(be, Solid);
             self.world.insert(be, BigEnemy);
+            self.world.insert(be, Sprite {sprite_name: "big_enemy".to_string() })
         }
 
         // Dialogue NPC — bottom-left area.
@@ -411,7 +424,7 @@ impl DemoGame {
         let dy = h.saturating_sub(4);
         if !solids.contains(&(dx, dy)) {
             let npc = self.world.spawn();
-            self.world.insert(npc, Position { x: dx, y: dy });
+            self.world.insert(npc, Position { x: dx + 5, y: dy + 5 });
             self.world.insert(npc, Renderable {
                 glyph: '\u{263A}',
                 fg: Color([0.9, 0.8, 0.3, 1.0]),
@@ -419,11 +432,13 @@ impl DemoGame {
             });
             self.world.insert(npc, Solid);
             self.world.insert(npc, DialogueNpc);
+            self.world.insert(npc, Sprite {sprite_name: "small_enemy".to_string() });
         }
 
         let player = self.world.spawn();
         self.world.insert(player, Position { x: w / 2, y: h / 2 });
         self.world.insert(player, Player);
+        self.world.insert(player, Sprite {sprite_name: "player".to_string() });
         self.player = Some(player);
     }
 
@@ -439,7 +454,8 @@ impl DemoGame {
     // ── UI rendering sub-routines ─────────────────────────────────────────
 
     fn draw_hud_top(&mut self, engine: &mut Engine) {
-        let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32; // screen width
+        //let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32; // screen width
+        let sw = self.window_config.physical_width as f32;
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
@@ -454,12 +470,12 @@ impl DemoGame {
             &format!("HP: {:.0} / {:.0}", self.ui.player_hp, self.ui.player_max_hp),
             Color::WHITE, Color::TRANSPARENT);
         // [i] and [l] icon buttons on the right
-        let icon_x = sw - tw * 3.0;
+        let icon_x = sw - (2.0 * tw) * 3.0;
         engine.ui.ui_rect(icon_x, th, tw * 3.0, th, PANEL_BG);
         let inv_color = if self.ui.inventory_open { UI_BRIGHT } else { UI_DIM };
         let log_color = if self.ui.log_open       { UI_BRIGHT } else { UI_DIM };
         engine.ui.ui_text(icon_x,          th, "[i]", inv_color, Color::TRANSPARENT);
-        engine.ui.ui_text(icon_x + tw * 2.0, th, "[l]", log_color, Color::TRANSPARENT);
+        engine.ui.ui_text(icon_x + (2.0 + tw) * 2.0, th, "[l]", log_color, Color::TRANSPARENT);
 
         // Row 2: XP progress bar + label
         engine.ui.ui_rect(0.0, th * 2.0, sw, th, PANEL_BG);
@@ -778,11 +794,35 @@ impl DemoGame {
 
 impl Game for DemoGame {
     fn update(&mut self, engine: &mut Engine) {
+        // ── Window mode / resolution keys ─────────────────────────────────────
+
+        // F11: toggle Windowed ↔ Borderless.
+        if engine.is_key_pressed(KeyCode::F11) {
+            self.window_config.mode = match self.window_config.mode {
+                WindowMode::Windowed   => WindowMode::Borderless,
+                WindowMode::Borderless |
+                WindowMode::Fullscreen => WindowMode::Windowed,
+            };
+            apply_window_settings(&engine.ui.renderer.window, &self.window_config);
+            println!("[window] mode → {:?}", self.window_config.mode);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+
         let gw = engine.grid_width();
         let gh = engine.grid_height();
 
         if !self.initialized || gw != self.map_w || gh != self.map_h {
             self.build_map(gw, gh);
+
+            // Keep window_config in sync with the actual pixel size so that F11
+            // can restore the correct dimensions when returning to windowed mode.
+            let actual_w = gw * engine.tile_width();
+            let actual_h = gh * engine.tile_height();
+            self.window_config.physical_width  = actual_w;
+            self.window_config.physical_height = actual_h;
+            self.window_config.logical_width   = actual_w;
+            self.window_config.logical_height  = actual_h;
 
             // Register the bitmap font once (on first init).
             if engine.ui.text.fonts.is_empty() {
@@ -1064,7 +1104,10 @@ impl Game for DemoGame {
             .filter_map(|(e, _)| self.world.get::<Position>(e).map(|p| (e, p.x, p.y)))
             .collect();
         for (entity, ex, ey) in small_enemies {
-            engine.draw_sprite_entity(ex, ey, "small_enemy", entity, Color::WHITE);
+            let sprite = self.world.get::<Sprite>(entity);
+            if let Some(sprite) = sprite {
+                engine.draw_sprite_entity(ex, ey, sprite.sprite_name.as_str(), entity, Color::WHITE);
+            }
         }
 
         let big_enemies: Vec<(Entity, u32, u32)> = self.world
@@ -1102,8 +1145,9 @@ impl Game for DemoGame {
 fn main() {
     Engine::builder()
         .with_title("jengine demo")
-        .with_size(800, 600)
+        .with_size(1280, 720)
         .with_tileset(DEFAULT_TILESET, 16, 24)
         .with_sprite_folder("resources/sprites")
+        .retro_scan_lines()
         .run(DemoGame::new());
 }

@@ -1,8 +1,10 @@
 pub mod atlas;
 pub mod particle_pipeline;
 pub mod pipeline;
+pub mod scanline_pipeline;
 pub mod sprite_atlas;
 pub mod text;
+pub mod utils;
 
 use std::sync::Arc;
 
@@ -13,6 +15,7 @@ use winit::window::Window;
 use atlas::Atlas;
 use particle_pipeline::{ParticlePipeline, ParticleVertex, create_particle_pipeline};
 use pipeline::{TilePipeline, TileVertex, create_tile_pipeline, orthographic_projection};
+use scanline_pipeline::{ScanlinePass, create_scanline_pass, resize_scanline_pass};
 use sprite_atlas::SpriteAtlas;
 
 pub struct Renderer {
@@ -41,6 +44,8 @@ pub struct Renderer {
     /// FNV-1a hash of the last uploaded UI vertex bytes; used to skip
     /// redundant write_buffer calls when UI is unchanged.
     ui_vertex_hash: u64,
+    /// Optional CRT scanline post-process pass.
+    scanline_pass: Option<ScanlinePass>,
 }
 
 /// FNV-1a 64-bit hash — used to detect unchanged UI vertex data.
@@ -51,7 +56,7 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 }
 
 impl Renderer {
-    pub async fn new(window: Arc<Window>, png_bytes: &[u8], tile_w: u32, tile_h: u32) -> Self {
+    pub async fn new(window: Arc<Window>, png_bytes: &[u8], tile_w: u32, tile_h: u32, use_scanlines: bool) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::default();
@@ -125,6 +130,12 @@ impl Renderer {
             ],
         });
 
+        let scanline_pass = if use_scanlines {
+            Some(create_scanline_pass(&device, &config, window.scale_factor() as f32))
+        } else {
+            None
+        };
+
         Self {
             window,
             surface,
@@ -142,6 +153,7 @@ impl Renderer {
             ui_vertex_buffer: None,
             ui_vertex_buffer_capacity: 0,
             ui_vertex_hash: 0,
+            scanline_pass,
         }
     }
 
@@ -180,6 +192,10 @@ impl Renderer {
         let proj = orthographic_projection(new_size.width as f32, new_size.height as f32);
         self.queue
             .write_buffer(&self.projection_buffer, 0, bytemuck::cast_slice(&proj));
+
+        if let Some(ref mut sp) = self.scanline_pass {
+            resize_scanline_pass(sp, &self.device, &self.queue, &self.window, &self.config);
+        }
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
@@ -242,11 +258,17 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        // Pick render target: intermediate texture (scanlines) or swapchain directly.
+        let target_view: &wgpu::TextureView = match &self.scanline_pass {
+            Some(sp) => &sp.render_view,
+            None     => &view,
+        };
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: target_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -319,6 +341,28 @@ impl Renderer {
                     pass.draw(0..count, 0..1);
                 }
             }
+        }
+
+        // ── Scanline blit pass (only when enabled) ───────────────────────
+        if let Some(ref sp) = self.scanline_pass {
+            let mut blit = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scanline_blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            blit.set_pipeline(&sp.pipeline.pipeline);
+            blit.set_bind_group(0, &sp.scene_bind_group, &[]);
+            blit.set_bind_group(1, &sp.uniforms_bind_group, &[]);
+            blit.draw(0..6, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

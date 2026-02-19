@@ -438,6 +438,7 @@ pub struct EngineBuilder {
     tile_h: u32,
     target_ups: u32,
     sprite_folder: Option<String>,
+    use_scanlines: bool,
 }
 
 impl Default for EngineBuilder {
@@ -451,6 +452,7 @@ impl Default for EngineBuilder {
             tile_h: 16,
             target_ups: 60,
             sprite_folder: None,
+            use_scanlines: false,
         }
     }
 }
@@ -467,6 +469,12 @@ impl EngineBuilder {
     /// The atlas is baked once at startup before the game loop begins.
     pub fn with_sprite_folder(mut self, path: &str) -> Self {
         self.sprite_folder = Some(path.to_string()); self
+    }
+
+    /// Enable CRT-style scanline post-processing (darkens every other logical
+    /// pixel row by ~18 %).  Opt-in; off by default.
+    pub fn retro_scan_lines(mut self) -> Self {
+        self.use_scanlines = true; self
     }
 
     pub fn run(self, game: impl Game + 'static) {
@@ -502,10 +510,11 @@ impl ApplicationHandler for App {
                 .create_window(
                     Window::default_attributes()
                         .with_title(&self.config.title)
-                        .with_inner_size(winit::dpi::LogicalSize::new(
+                        .with_inner_size(winit::dpi::PhysicalSize::new(
                             self.config.width,
                             self.config.height,
-                        )),
+                        ))
+                        .with_resizable(false),
                 )
                 .unwrap(),
         );
@@ -514,6 +523,7 @@ impl ApplicationHandler for App {
             self.config.png_bytes,
             self.config.tile_w,
             self.config.tile_h,
+            self.config.use_scanlines,
         ));
 
         if let Some(folder) = &self.config.sprite_folder {

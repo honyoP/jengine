@@ -31,7 +31,7 @@ pub fn create_particle_pipeline(
 ) -> ParticlePipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("particle_shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("particle_shader.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particle_shader.wgsl").into()),
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

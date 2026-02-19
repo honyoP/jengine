@@ -4,6 +4,7 @@ pub mod geometry;
 pub mod pathfinding;
 pub mod renderer;
 pub mod ui;
+pub mod window;
 
 /// Built-in 16×24 bitmap font atlas embedded at compile time.
 pub const DEFAULT_TILESET: &[u8] = include_bytes!("../resources/font_atlas_16x24.png");
