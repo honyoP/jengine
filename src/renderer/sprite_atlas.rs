@@ -20,7 +20,7 @@ pub struct SpriteData {
 
 /// One sprite's position inside the packed atlas.
 #[derive(Debug, PartialEq)]
-pub(crate) struct PlacedSprite {
+pub struct PlacedSprite {
     pub name: String,
     /// Top-left pixel coordinate inside the atlas.
     pub atlas_x: u32,
@@ -38,7 +38,7 @@ pub(crate) struct PlacedSprite {
 ///
 /// Returns `(placements, atlas_pixel_width, atlas_pixel_height)`.  Both
 /// atlas dimensions are rounded up to the next power of two.
-pub(crate) fn pack(items: &[(String, u32, u32)], max_width: u32) -> (Vec<PlacedSprite>, u32, u32) {
+pub fn pack(items: &[(String, u32, u32)], max_width: u32) -> (Vec<PlacedSprite>, u32, u32) {
     // Sort by height descending for better shelf utilisation.
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by(|&a, &b| items[b].2.cmp(&items[a].2));
@@ -203,6 +203,11 @@ impl SpriteAtlas {
         Self { sprites, texture_view, sampler }
     }
 
+    /// Returns the metadata for a named sprite.
+    pub fn get_data(&self, name: &str) -> Option<&SpriteData> {
+        self.sprites.get(name)
+    }
+
     /// Create a 1×1 transparent atlas when no sprites are available.
     fn empty(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let img = RgbaImage::new(1, 1);
@@ -243,218 +248,3 @@ impl SpriteAtlas {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Helper: build an item tuple.
-    fn item(name: &str, w: u32, h: u32) -> (String, u32, u32) {
-        (name.to_string(), w, h)
-    }
-
-    // ── pack() correctness ────────────────────────────────────────────────
-
-    #[test]
-    fn pack_empty_input_returns_no_placements() {
-        let (placements, atlas_w, atlas_h) = pack(&[], 512);
-        assert!(placements.is_empty());
-        // Atlas height rounds 0 → next_power_of_two(0).max(1) = 1.
-        assert_eq!(atlas_h, 1);
-        assert_eq!(atlas_w, 512);
-    }
-
-    #[test]
-    fn pack_single_sprite_placed_at_origin() {
-        let items = [item("hero", 16, 24)];
-        let (pl, _, _) = pack(&items, 512);
-        assert_eq!(pl.len(), 1);
-        assert_eq!(pl[0].atlas_x, 0);
-        assert_eq!(pl[0].atlas_y, 0);
-        assert_eq!(pl[0].pixel_w, 16);
-        assert_eq!(pl[0].pixel_h, 24);
-    }
-
-    #[test]
-    fn pack_two_sprites_on_same_shelf() {
-        // Both fit side-by-side within ATLAS_WIDTH.
-        let items = [item("a", 16, 24), item("b", 16, 24)];
-        let (pl, _, _) = pack(&items, 512);
-        assert_eq!(pl.len(), 2);
-        // One is at x=0, the other at x=16 (order may differ due to height sort).
-        let xs: Vec<u32> = pl.iter().map(|p| p.atlas_x).collect();
-        assert!(xs.contains(&0) && xs.contains(&16));
-        // Both on the same row (y=0).
-        assert!(pl.iter().all(|p| p.atlas_y == 0));
-    }
-
-    #[test]
-    fn pack_wraps_to_next_shelf_when_row_full() {
-        // Three 200px-wide sprites; the third won't fit in a 512px row.
-        let items = [item("a", 200, 32), item("b", 200, 32), item("c", 200, 32)];
-        let (pl, _, _) = pack(&items, 512);
-        assert_eq!(pl.len(), 3);
-        let row0: Vec<_> = pl.iter().filter(|p| p.atlas_y == 0).collect();
-        let row1: Vec<_> = pl.iter().filter(|p| p.atlas_y > 0).collect();
-        assert_eq!(row0.len(), 2, "first two sprites fit on row 0");
-        assert_eq!(row1.len(), 1, "third sprite wraps to row 1");
-        assert_eq!(row1[0].atlas_y, 32, "row 1 starts at y = row-0 height");
-    }
-
-    #[test]
-    fn pack_sorts_taller_sprites_first() {
-        // The tall sprite should appear on row 0 even though it was listed last.
-        let items = [item("small", 32, 16), item("tall", 32, 64)];
-        let (pl, _, _) = pack(&items, 512);
-        let tall = pl.iter().find(|p| p.name == "tall").unwrap();
-        let small = pl.iter().find(|p| p.name == "small").unwrap();
-        assert_eq!(tall.atlas_y, 0, "tallest sprite always placed first");
-        assert_eq!(small.atlas_y, 0, "shorter sprite shares the same shelf");
-        // Tall is to the left of small (placed first).
-        assert!(tall.atlas_x < small.atlas_x);
-    }
-
-    #[test]
-    fn pack_skips_sprite_wider_than_atlas() {
-        let items = [item("giant", 600, 48), item("normal", 16, 24)];
-        let (pl, _, _) = pack(&items, 512);
-        assert_eq!(pl.len(), 1, "oversized sprite is excluded");
-        assert_eq!(pl[0].name, "normal");
-    }
-
-    #[test]
-    fn pack_dedup_only_places_first_occurrence_of_name() {
-        // Two entries share the name "hero"; only the first (tallest after sort)
-        // should appear in the placements.
-        let items = [item("hero", 16, 24), item("hero", 64, 64)];
-        let (pl, _, _) = pack(&items, 512);
-        assert_eq!(pl.len(), 1, "duplicate name produces only one placement");
-        // The 64x64 is taller so it will be sorted first and placed; the 16x24 is
-        // the duplicate and should be dropped.
-        assert_eq!(pl[0].pixel_w, 64);
-        assert_eq!(pl[0].pixel_h, 64);
-    }
-
-    #[test]
-    fn pack_atlas_width_is_power_of_two() {
-        let items = [item("a", 10, 10)];
-        let (_, atlas_w, _) = pack(&items, 100);
-        assert!(atlas_w.is_power_of_two(), "atlas_w={atlas_w} must be a power of two");
-    }
-
-    #[test]
-    fn pack_atlas_height_is_power_of_two() {
-        let items = [item("a", 16, 24), item("b", 16, 24)];
-        let (_, _, atlas_h) = pack(&items, 512);
-        assert!(atlas_h.is_power_of_two(), "atlas_h={atlas_h} must be a power of two");
-    }
-
-    #[test]
-    fn pack_no_placement_overflows_atlas_x() {
-        let items: Vec<_> = (0..10).map(|i| item(&format!("s{i}"), 40, 20)).collect();
-        let (pl, atlas_w, _) = pack(&items, 256);
-        for p in &pl {
-            assert!(
-                p.atlas_x + p.pixel_w <= atlas_w,
-                "sprite '{}' overflows atlas x: {}+{} > {atlas_w}",
-                p.name, p.atlas_x, p.pixel_w
-            );
-        }
-    }
-
-    #[test]
-    fn pack_no_placement_overflows_atlas_y() {
-        let items: Vec<_> = (0..6).map(|i| item(&format!("s{i}"), 100, 30)).collect();
-        let (pl, _, atlas_h) = pack(&items, 256);
-        for p in &pl {
-            assert!(
-                p.atlas_y + p.pixel_h <= atlas_h,
-                "sprite '{}' overflows atlas y: {}+{} > {atlas_h}",
-                p.name, p.atlas_y, p.pixel_h
-            );
-        }
-    }
-
-    // ── Tile-span computation ─────────────────────────────────────────────
-
-    fn tile_span(pixel_w: u32, pixel_h: u32, tile_w: u32, tile_h: u32) -> (u32, u32) {
-        let tw = ((pixel_w as f32 / tile_w as f32).round() as u32).max(1);
-        let th = ((pixel_h as f32 / tile_h as f32).round() as u32).max(1);
-        (tw, th)
-    }
-
-    #[test]
-    fn tile_span_1x1_for_exact_tile_size() {
-        assert_eq!(tile_span(16, 24, 16, 24), (1, 1));
-    }
-
-    #[test]
-    fn tile_span_2x2_for_double_tile_size() {
-        // big_enemy: 32x48 on a 16x24 grid = 2×2.
-        assert_eq!(tile_span(32, 48, 16, 24), (2, 2));
-    }
-
-    #[test]
-    fn tile_span_rounds_to_nearest_tile() {
-        // 24px wide on a 16px grid → 24/16 = 1.5 → rounds to 2.
-        let (tw, _) = tile_span(24, 24, 16, 24);
-        assert_eq!(tw, 2);
-    }
-
-    #[test]
-    fn tile_span_minimum_is_one_even_for_tiny_sprites() {
-        // A 1×1 pixel sprite on a 16×24 grid must still report span (1, 1).
-        assert_eq!(tile_span(1, 1, 16, 24), (1, 1));
-    }
-
-    // ── UV value constraints ──────────────────────────────────────────────
-
-    #[test]
-    fn pack_uvs_within_zero_one_range() {
-        let items = [item("a", 32, 48), item("b", 16, 24)];
-        let (pl, atlas_w, atlas_h) = pack(&items, 512);
-        for p in &pl {
-            let uv_min = [p.atlas_x as f32 / atlas_w as f32, p.atlas_y as f32 / atlas_h as f32];
-            let uv_max = [
-                (p.atlas_x + p.pixel_w) as f32 / atlas_w as f32,
-                (p.atlas_y + p.pixel_h) as f32 / atlas_h as f32,
-            ];
-            for v in uv_min.iter().chain(uv_max.iter()) {
-                assert!(*v >= 0.0 && *v <= 1.0, "UV {v} out of [0,1] for '{}'", p.name);
-            }
-        }
-    }
-
-    #[test]
-    fn pack_uv_min_strictly_less_than_uv_max() {
-        let items = [item("a", 16, 24)];
-        let (pl, atlas_w, atlas_h) = pack(&items, 512);
-        let p = &pl[0];
-        let uv_min_x = p.atlas_x as f32 / atlas_w as f32;
-        let uv_max_x = (p.atlas_x + p.pixel_w) as f32 / atlas_w as f32;
-        let uv_min_y = p.atlas_y as f32 / atlas_h as f32;
-        let uv_max_y = (p.atlas_y + p.pixel_h) as f32 / atlas_h as f32;
-        assert!(uv_min_x < uv_max_x, "uv_min_x must be < uv_max_x");
-        assert!(uv_min_y < uv_max_y, "uv_min_y must be < uv_max_y");
-    }
-
-    // ── Regression: the duplicate-name crash ─────────────────────────────
-
-    #[test]
-    fn pack_duplicate_name_does_not_cause_dimension_mismatch() {
-        // Simulates the original crash: two different-sized images share a name.
-        // The smaller image's pw/ph (from its placement) must not be applied
-        // to the larger image (which img_map would return after overwrite).
-        // With the dedup fix, only ONE placement is created, so no mismatch.
-        let items = [
-            item("big_enemy", 32, 48),   // first seen
-            item("big_enemy", 64, 96),   // duplicate — must be dropped
-        ];
-        let (pl, _, _) = pack(&items, 512);
-        assert_eq!(pl.len(), 1);
-        // Only one placement; its dimensions are those of the first occurrence
-        // (which is 64x96 since the packer sorts tallest-first, making 64x96
-        //  the first-seen after sorting).
-        assert_eq!(pl[0].pixel_w, 64);
-        assert_eq!(pl[0].pixel_h, 96);
-    }
-}

@@ -33,6 +33,9 @@ impl Entity {
 #[doc(hidden)]
 pub trait ComponentStore {
     fn remove_entity(&mut self, id: u32);
+    fn has_entity(&self, id: u32) -> bool;
+    fn component_name(&self) -> &'static str;
+    fn len(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -135,6 +138,18 @@ impl<T: 'static> SparseSet<T> {
 impl<T: 'static> ComponentStore for SparseSet<T> {
     fn remove_entity(&mut self, id: u32) {
         self.remove(id);
+    }
+
+    fn has_entity(&self, id: u32) -> bool {
+        self.contains(id)
+    }
+
+    fn component_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
+
+    fn len(&self) -> usize {
+        self.dense.len()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -492,6 +507,9 @@ macro_rules! impl_query_params {
                 id: u32,
             ) -> Option<Self::ItemMut<'a>> {
                 let ($($name,)+) = fetch;
+                // SAFETY: The iterator ensures that each entity ID is fetched only once
+                // across the entire iteration, and the World ensures that all component 
+                // types in the tuple are distinct, preventing aliasing of mutable references.
                 Some(($( unsafe { $name.get_mut(id)? }, )+))
             }
         }
@@ -865,6 +883,67 @@ impl World {
                 generations,
             },
         }
+    }
+
+    // -- Debug Info ---------------------------------------------------------
+
+    /// Returns a map of component type names to their current entity counts.
+    pub fn debug_info(&self) -> HashMap<&'static str, usize> {
+        self.stores
+            .values()
+            .map(|store| (store.component_name(), store.len()))
+            .collect()
+    }
+
+    /// Returns a list of living entities and their component type names, with pagination.
+    ///
+    /// # Complexity
+    ///
+    /// Scans all ever-allocated entity slots (`O(total_ever_allocated)`), not just
+    /// currently-living entities. In worlds with high churn, the generations vec may be
+    /// significantly larger than `entity_count()`. Prefer small `limit` values for
+    /// interactive UIs to avoid per-frame linear scans over large allocation histories.
+    pub fn entities_debug_info_paginated(&self, offset: usize, limit: usize) -> Vec<(Entity, Vec<&'static str>)> {
+        let mut result = Vec::new();
+        let mut count = 0;
+        let mut skipped = 0;
+
+        for (id, &g) in self.allocator.generations.iter().enumerate() {
+            let entity = Entity { id: id as u32, generation: g };
+            if self.allocator.is_alive(entity) {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+
+                let components = self.components_for_entity(entity);
+                result.push((entity, components));
+                count += 1;
+                if count >= limit {
+                    break;
+                }
+            }
+        }
+        result
+    }
+
+    /// Returns a list of component type names attached to the given entity.
+    pub fn components_for_entity(&self, entity: Entity) -> Vec<&'static str> {
+        let mut components = Vec::new();
+        if !self.allocator.is_alive(entity) {
+            return components;
+        }
+        for store in self.stores.values() {
+            if store.has_entity(entity.id) {
+                components.push(store.component_name());
+            }
+        }
+        components
+    }
+
+    /// Returns the total number of living entities.
+    pub fn entity_count(&self) -> usize {
+        self.allocator.generations.len() - self.allocator.free.len()
     }
 
     // -- Internal helpers ---------------------------------------------------

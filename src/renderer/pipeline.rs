@@ -5,9 +5,10 @@ pub struct TileVertex {
     pub uv: [f32; 2],
     pub fg_color: [f32; 4],
     pub bg_color: [f32; 4],
-    /// Sub-pixel visual offset in pixels applied before projection (animation juice).
-    pub v_offset: [f32; 2],
-    /// 0.0 = Background layer (static, no v_offset), 1.0 = Foreground layer (animated).
+    /// ECS entity ID for looking up visual offsets in the shader (animation juice).
+    /// NO_ENTITY (u32::MAX) if not animated.
+    pub entity_id: u32,
+    /// 0.0 = Background layer (static), 0.5 = Sprite layer, 1.0 = Foreground layer.
     pub layer_id: f32,
 }
 
@@ -17,7 +18,7 @@ impl TileVertex {
         1 => Float32x2,  // uv
         2 => Float32x4,  // fg_color
         3 => Float32x4,  // bg_color
-        4 => Float32x2,  // v_offset
+        4 => Uint32,     // entity_id
         5 => Float32,    // layer_id
     ];
 
@@ -34,6 +35,7 @@ pub struct TilePipeline {
     pub render_pipeline: wgpu::RenderPipeline,
     pub projection_bind_group_layout: wgpu::BindGroupLayout,
     pub atlas_bind_group_layout: wgpu::BindGroupLayout,
+    pub entity_offsets_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 pub fn create_tile_pipeline(
@@ -83,9 +85,28 @@ pub fn create_tile_pipeline(
             ],
         });
 
+    let entity_offsets_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("entity_offsets_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("tile_pipeline_layout"),
-        bind_group_layouts: &[&projection_bind_group_layout, &atlas_bind_group_layout],
+        bind_group_layouts: &[
+            &projection_bind_group_layout,
+            &atlas_bind_group_layout,
+            &entity_offsets_bind_group_layout,
+        ],
         ..Default::default()
     });
 
@@ -122,6 +143,7 @@ pub fn create_tile_pipeline(
         render_pipeline,
         projection_bind_group_layout,
         atlas_bind_group_layout,
+        entity_offsets_bind_group_layout,
     }
 }
 

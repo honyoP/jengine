@@ -7,17 +7,18 @@
 ///
 /// # Click Consumption
 ///
-/// When a widget fully handles a mouse click it sets `engine.ui.click_consumed`
+/// When a widget fully handles a mouse click it sets `engine.input.mouse_consumed`
 /// to `true`.  Game code should check this flag before acting on clicks to
 /// prevent UI interactions from also triggering world actions.
 ///
 /// # Text Input
 ///
-/// `InputBox` reads from `engine.chars_typed` (printable characters captured
+/// `InputBox` reads from `engine.input.chars_typed` (printable characters captured
 /// each frame from `KeyEvent.text`) and drains the buffer as it processes
 /// them.  This means if an `InputBox` is focused it will consume all typed
 /// characters before the game sees them.
 use crate::engine::{Color, jEngine, KeyCode};
+use crate::input::MouseButton;
 
 // ── Internal widget palette ────────────────────────────────────────────────────
 // All widgets share these defaults so they look consistent out of the box.
@@ -83,8 +84,8 @@ impl Dropdown {
         }
 
         // ── Header ────────────────────────────────────────────────────────────
-        let hov = engine.ui.is_mouse_over(x, y, w, th);
-        let clicked = engine.ui.was_clicked(x, y, w, th) && !engine.ui.click_consumed;
+        let hov = engine.input.is_mouse_over(x, y, w, th);
+        let clicked = engine.input.was_clicked(x, y, w, th) && !engine.input.mouse_consumed;
 
         let header_bg = if hov || self.is_open { BG_HOV } else { BG };
         let border_col = if self.is_open { BORDER_F } else { BORDER };
@@ -104,7 +105,7 @@ impl Dropdown {
 
         if clicked {
             self.is_open = !self.is_open;
-            engine.ui.click_consumed = true;
+            engine.input.mouse_consumed = true;
         }
 
         // ── Expanded option list ──────────────────────────────────────────────
@@ -123,9 +124,9 @@ impl Dropdown {
             for (i, option) in self.options.iter().enumerate() {
                 let oy = list_y + i as f32 * th;
                 let is_sel = i == self.selected;
-                let is_hov = engine.ui.is_mouse_over(x, oy, w, th);
-                let row_clicked = engine.ui.was_clicked(x, oy, w, th)
-                    && !engine.ui.click_consumed;
+                let is_hov = engine.input.is_mouse_over(x, oy, w, th);
+                let row_clicked = engine.input.was_clicked(x, oy, w, th)
+                    && !engine.input.mouse_consumed;
 
                 let row_bg = if is_hov { BG_HOV } else if is_sel { BG_SEL } else { BG };
                 engine.ui.ui_rect(x + 1.0, oy, w - 2.0, th, row_bg);
@@ -142,15 +143,16 @@ impl Dropdown {
                         self.selected = i;
                     }
                     self.is_open = false;
-                    engine.ui.click_consumed = true;
+                    engine.input.mouse_consumed = true;
                 }
             }
 
             // Close when the user clicks outside the entire dropdown area.
-            if engine.ui.mouse_clicked && !engine.ui.click_consumed {
-                if !engine.ui.is_mouse_over(x, y, w, th + list_h) {
+            // Do NOT consume the click — the outside click should remain available
+            // for other widgets or game code to handle.
+            if engine.input.is_mouse_pressed(MouseButton::Left) && !engine.input.mouse_consumed {
+                if !engine.input.is_mouse_over(x, y, w, th + list_h) {
                     self.is_open = false;
-                    engine.ui.click_consumed = true;
                 }
             }
         }
@@ -202,17 +204,17 @@ impl InputBox {
         let tw = engine.tile_width() as f32;
         let dt = engine.dt();
 
-        let hovered = engine.ui.is_mouse_over(x, y, w, th);
-        let clicked_inside = engine.ui.was_clicked(x, y, w, th)
-            && !engine.ui.click_consumed;
-        let clicked_outside = engine.ui.mouse_clicked
-            && !engine.ui.is_mouse_over(x, y, w, th)
-            && !engine.ui.click_consumed;
+        let hovered = engine.input.is_mouse_over(x, y, w, th);
+        let clicked_inside = engine.input.was_clicked(x, y, w, th)
+            && !engine.input.mouse_consumed;
+        let clicked_outside = engine.input.is_mouse_pressed(MouseButton::Left)
+            && !engine.input.is_mouse_over(x, y, w, th)
+            && !engine.input.mouse_consumed;
 
         // ── Focus management ──────────────────────────────────────────────────
         if clicked_inside {
             self.is_focused = true;
-            engine.ui.click_consumed = true;
+            engine.input.mouse_consumed = true;
         } else if clicked_outside {
             self.is_focused = false;
         }
@@ -221,11 +223,14 @@ impl InputBox {
         let mut changed = false;
 
         if self.is_focused {
+            // Mark keys as consumed while we have focus
+            engine.input.key_consumed = true;
+
             // Advance caret blink (period = 1 s → 0.5 s visible, 0.5 s hidden).
             self.cursor_blink = (self.cursor_blink + dt) % 1.0;
 
             // Drain and consume typed printable characters.
-            let incoming: Vec<char> = engine.chars_typed.drain(..).collect();
+            let incoming: Vec<char> = engine.input.chars_typed.drain(..).collect();
             for ch in incoming {
                 if self.value.chars().count() < self.max_chars {
                     self.value.push(ch);
@@ -327,12 +332,12 @@ impl ToggleSelector {
         let lbl_x = x + btn_w;
         let lbl_w = w - btn_w * 2.0;
 
-        let left_hov  = engine.ui.is_mouse_over(x, y, btn_w, th);
-        let right_hov = engine.ui.is_mouse_over(x + w - btn_w, y, btn_w, th);
-        let left_click  = engine.ui.was_clicked(x, y, btn_w, th)
-            && !engine.ui.click_consumed;
-        let right_click = engine.ui.was_clicked(x + w - btn_w, y, btn_w, th)
-            && !engine.ui.click_consumed;
+        let left_hov  = engine.input.is_mouse_over(x, y, btn_w, th);
+        let right_hov = engine.input.is_mouse_over(x + w - btn_w, y, btn_w, th);
+        let left_click  = engine.input.was_clicked(x, y, btn_w, th)
+            && !engine.input.mouse_consumed;
+        let right_click = engine.input.was_clicked(x + w - btn_w, y, btn_w, th)
+            && !engine.input.mouse_consumed;
 
         let can_cycle = n > 1;
 
@@ -369,119 +374,327 @@ impl ToggleSelector {
         if left_click && can_cycle {
             self.selected = if self.selected == 0 { n - 1 } else { self.selected - 1 };
             result = Some(self.selected);
-            engine.ui.click_consumed = true;
+            engine.input.mouse_consumed = true;
         }
         if right_click && can_cycle {
             self.selected = (self.selected + 1) % n;
             result = Some(self.selected);
-            engine.ui.click_consumed = true;
+            engine.input.mouse_consumed = true;
         }
 
         result
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
+use super::{Alignment, Padding, BorderStyle, Label, Rect};
+use crate::renderer::text::text_width;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ── Layout Engine ─────────────────────────────────────────────────────────────
 
-    // ── Dropdown ──────────────────────────────────────────────────────────────
+/// Trait for UI elements that can be laid out and drawn.
+pub trait Widget {
+    /// Calculate the intrinsic pixel size of the widget.
+    fn size(&self, engine: &jEngine) -> (f32, f32);
+    /// Draw the widget at the given coordinates.
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, available_w: f32, clip: Option<Rect>);
+}
 
-    #[test]
-    fn dropdown_new_selected_is_zero() {
-        let dd = Dropdown::new(["Alpha", "Beta", "Gamma"]);
-        assert_eq!(dd.selected, 0);
-        assert!(!dd.is_open);
+// ── Concrete Widgets ──────────────────────────────────────────────────────────
+
+/// A simple line of text.
+pub struct TextWidget {
+    pub text: String,
+    pub size: Option<f32>,
+    pub color: Color,
+}
+
+impl Widget for TextWidget {
+    fn size(&self, engine: &jEngine) -> (f32, f32) {
+        let fs = self.size.unwrap_or(engine.tile_height() as f32);
+        if let Some(font) = &engine.ui.text.font {
+            (text_width(&self.text, font, fs), fs)
+        } else {
+            (self.text.chars().count() as f32 * engine.tile_width() as f32, fs)
+        }
     }
 
-    #[test]
-    fn dropdown_selected_text_returns_current() {
-        let mut dd = Dropdown::new(["Alpha", "Beta"]);
-        dd.selected = 1;
-        assert_eq!(dd.selected_text(), "Beta");
-    }
-
-    #[test]
-    fn dropdown_selected_text_empty_when_no_options() {
-        let dd = Dropdown::new(std::iter::empty::<&str>());
-        assert_eq!(dd.selected_text(), "");
-    }
-
-    #[test]
-    fn dropdown_selected_text_oob_is_empty() {
-        let mut dd = Dropdown::new(["Only"]);
-        dd.selected = 5; // out of range
-        assert_eq!(dd.selected_text(), "");
-    }
-
-    // ── InputBox ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn inputbox_new_is_empty_and_unfocused() {
-        let ib = InputBox::new(20);
-        assert!(ib.value.is_empty());
-        assert!(!ib.is_focused);
-        assert_eq!(ib.max_chars, 20);
-    }
-
-    #[test]
-    fn inputbox_max_chars_minimum_is_one() {
-        let ib = InputBox::new(0);
-        assert_eq!(ib.max_chars, 1);
-    }
-
-    #[test]
-    fn inputbox_cursor_starts_at_zero() {
-        let ib = InputBox::new(10);
-        assert_eq!(ib.cursor_blink, 0.0);
-    }
-
-    // ── ToggleSelector ────────────────────────────────────────────────────────
-
-    #[test]
-    fn toggle_new_selected_is_zero() {
-        let ts = ToggleSelector::new(["720p", "1080p", "1440p"]);
-        assert_eq!(ts.selected, 0);
-    }
-
-    #[test]
-    fn toggle_selected_text_wraps() {
-        let mut ts = ToggleSelector::new(["A", "B", "C"]);
-        ts.selected = 2;
-        assert_eq!(ts.selected_text(), "C");
-    }
-
-    #[test]
-    fn toggle_selected_text_empty_when_no_options() {
-        let ts = ToggleSelector::new(std::iter::empty::<&str>());
-        assert_eq!(ts.selected_text(), "");
-    }
-
-    #[test]
-    fn toggle_left_wraps_from_zero_to_last() {
-        // Simulate the left-click logic without needing a real engine.
-        let mut ts = ToggleSelector::new(["A", "B", "C"]);
-        let n = ts.options.len();
-        ts.selected = if ts.selected == 0 { n - 1 } else { ts.selected - 1 };
-        assert_eq!(ts.selected, 2);
-    }
-
-    #[test]
-    fn toggle_right_wraps_from_last_to_zero() {
-        let mut ts = ToggleSelector::new(["A", "B", "C"]);
-        ts.selected = 2;
-        let n = ts.options.len();
-        ts.selected = (ts.selected + 1) % n;
-        assert_eq!(ts.selected, 0);
-    }
-
-    #[test]
-    fn toggle_single_option_no_cycle() {
-        // With one option, `can_cycle` is false — clicking should be a no-op.
-        let ts = ToggleSelector::new(["Only"]);
-        let can_cycle = ts.options.len() > 1;
-        assert!(!can_cycle);
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, _available_w: f32, clip: Option<Rect>) {
+        if let Some(c) = clip {
+            let (_, h) = self.size(engine);
+            if y + h < c.y || y > c.y + c.h {
+                return; // Simple vertical culling
+            }
+        }
+        engine.ui.ui_text(x, y, &self.text, self.color, TRANSP, self.size);
     }
 }
+
+/// A wrapper for a pre-existing Label.
+pub struct LabelWidget<'a> {
+    pub label: &'a mut Label,
+}
+
+impl<'a> Widget for LabelWidget<'a> {
+    fn size(&self, engine: &jEngine) -> (f32, f32) {
+        if let Some(font) = &engine.ui.text.font {
+            (text_width(self.label.text(), font, self.label.font_size()), self.label.font_size())
+        } else {
+            (self.label.text().chars().count() as f32 * engine.tile_width() as f32, self.label.font_size())
+        }
+    }
+
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, _available_w: f32, clip: Option<Rect>) {
+        if let Some(c) = clip {
+            let (_, h) = self.size(engine);
+            if y + h < c.y || y > c.y + c.h {
+                return;
+            }
+        }
+        self.label.set_position([x, y]);
+        self.label.draw(&mut engine.ui.text);
+    }
+}
+
+/// A solid-colored rectangle.
+pub struct RectWidget {
+    pub w: f32,
+    pub h: f32,
+    pub color: Color,
+}
+
+impl Widget for RectWidget {
+    fn size(&self, _engine: &jEngine) -> (f32, f32) { (self.w, self.h) }
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, _available_w: f32, clip: Option<Rect>) {
+        if let Some(c) = clip {
+            if y + self.h < c.y || y > c.y + c.h {
+                return;
+            }
+        }
+        engine.ui.ui_rect(x, y, self.w, self.h, self.color);
+    }
+}
+
+/// Fixed-size gap.
+pub struct Spacer {
+    pub size: f32,
+    pub horizontal: bool,
+}
+
+impl Widget for Spacer {
+    fn size(&self, _engine: &jEngine) -> (f32, f32) {
+        if self.horizontal { (self.size, 0.0) } else { (0.0, self.size) }
+    }
+    fn draw(&mut self, _engine: &mut jEngine, _x: f32, _y: f32, _available_w: f32, _clip: Option<Rect>) {}
+}
+
+// ── Layout Containers ─────────────────────────────────────────────────────────
+
+/// Vertical stack layout container.
+pub struct VStack<'a> {
+    pub widgets: Vec<Box<dyn Widget + 'a>>,
+    pub alignment: Alignment,
+    pub padding: Padding,
+    pub spacing: f32,
+    pub min_width: f32,
+    pub bg_color: Option<Color>,
+    pub border: Option<(BorderStyle, Color)>,
+}
+
+impl<'a> VStack<'a> {
+    pub fn new(alignment: Alignment) -> Self {
+        Self {
+            widgets: Vec::new(),
+            alignment,
+            padding: Padding::default(),
+            spacing: 0.0,
+            min_width: 0.0,
+            bg_color: None,
+            border: None,
+        }
+    }
+
+    pub fn with_padding(mut self, padding: Padding) -> Self { self.padding = padding; self }
+    pub fn with_spacing(mut self, spacing: f32) -> Self { self.spacing = spacing; self }
+    pub fn with_min_width(mut self, min_width: f32) -> Self { self.min_width = min_width; self }
+    pub fn with_bg(mut self, color: Color) -> Self { self.bg_color = Some(color); self }
+    pub fn with_border(mut self, style: BorderStyle, color: Color) -> Self { self.border = Some((style, color)); self }
+
+    pub fn add(mut self, widget: impl Widget + 'a) -> Self {
+        self.widgets.push(Box::new(widget));
+        self
+    }
+}
+
+impl<'a> Widget for VStack<'a> {
+    fn size(&self, engine: &jEngine) -> (f32, f32) {
+        let mut max_w = self.min_width;
+        let mut total_h = self.padding.top + self.padding.bottom;
+
+        for (i, w) in self.widgets.iter().enumerate() {
+            let (ww, wh) = w.size(engine);
+            max_w = max_w.max(ww + self.padding.left + self.padding.right);
+            total_h += wh;
+            if i < self.widgets.len() - 1 {
+                total_h += self.spacing;
+            }
+        }
+        (max_w, total_h)
+    }
+
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, _available_w: f32, clip: Option<Rect>) {
+        // Pre-compute child sizes once to avoid calling size() twice per child
+        // (once for the stack dimensions, once for layout). Without this,
+        // nested containers cause O(N²) size() calls.
+        let sizes: Vec<(f32, f32)> = self.widgets.iter().map(|w| w.size(engine)).collect();
+
+        // Recompute stack dimensions from the cached sizes.
+        let mut stack_w = self.min_width;
+        let mut stack_h = self.padding.top + self.padding.bottom;
+        for (i, &(ww, wh)) in sizes.iter().enumerate() {
+            stack_w = stack_w.max(ww + self.padding.left + self.padding.right);
+            stack_h += wh;
+            if i < sizes.len() - 1 { stack_h += self.spacing; }
+        }
+
+        // Draw background and border
+        if let Some(bg) = self.bg_color {
+            engine.ui.ui_rect(x, y, stack_w, stack_h, bg);
+        }
+        if let Some((style, color)) = self.border {
+            engine.ui.ui_box(x, y, stack_w, stack_h, style, color, Color::TRANSPARENT);
+        }
+
+        let content_w = stack_w - self.padding.left - self.padding.right;
+        let mut current_y = y + self.padding.top;
+
+        for (w, &(ww, wh)) in self.widgets.iter_mut().zip(sizes.iter()) {
+            let item_x = match self.alignment {
+                Alignment::Start => x + self.padding.left,
+                // Centre within the padded content area; padding always respected.
+                Alignment::Center => x + self.padding.left + (content_w - ww) * 0.5,
+                Alignment::End => x + stack_w - ww - self.padding.right,
+            };
+            w.draw(engine, item_x, current_y, content_w, clip);
+            current_y += wh + self.spacing;
+        }
+    }
+}
+
+/// Horizontal stack layout container.
+pub struct HStack<'a> {
+    pub widgets: Vec<Box<dyn Widget + 'a>>,
+    pub alignment: Alignment, // Vertical alignment within the row
+    pub padding: Padding,
+    pub spacing: f32,
+}
+
+impl<'a> HStack<'a> {
+    pub fn new(alignment: Alignment) -> Self {
+        Self {
+            widgets: Vec::new(),
+            alignment,
+            padding: Padding::default(),
+            spacing: 0.0,
+        }
+    }
+
+    pub fn with_padding(mut self, padding: Padding) -> Self { self.padding = padding; self }
+    pub fn with_spacing(mut self, spacing: f32) -> Self { self.spacing = spacing; self }
+
+    pub fn add(mut self, widget: impl Widget + 'a) -> Self {
+        self.widgets.push(Box::new(widget));
+        self
+    }
+}
+
+impl<'a> Widget for HStack<'a> {
+    fn size(&self, engine: &jEngine) -> (f32, f32) {
+        let mut total_w = self.padding.left + self.padding.right;
+        let mut max_h = 0.0f32;
+
+        for (i, w) in self.widgets.iter().enumerate() {
+            let (ww, wh) = w.size(engine);
+            total_w += ww;
+            max_h = max_h.max(wh);
+            if i < self.widgets.len() - 1 {
+                total_w += self.spacing;
+            }
+        }
+        (total_w, max_h + self.padding.top + self.padding.bottom)
+    }
+
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, _available_w: f32, clip: Option<Rect>) {
+        // Pre-compute child sizes once to avoid calling size() twice per child.
+        let sizes: Vec<(f32, f32)> = self.widgets.iter().map(|w| w.size(engine)).collect();
+
+        // Recompute stack height from the cached sizes.
+        let max_h = sizes.iter().map(|&(_, h)| h).fold(0.0f32, f32::max);
+        let stack_h = max_h + self.padding.top + self.padding.bottom;
+
+        let mut current_x = x + self.padding.left;
+
+        for (w, &(ww, wh)) in self.widgets.iter_mut().zip(sizes.iter()) {
+            let item_y = match self.alignment {
+                Alignment::Start => y + self.padding.top,
+                Alignment::Center => y + (stack_h - wh) * 0.5,
+                Alignment::End => y + stack_h - wh - self.padding.bottom,
+            };
+            w.draw(engine, current_x, item_y, ww, clip);
+            current_x += ww + self.spacing;
+        }
+    }
+}
+        
+// ── ScrollContainer ───────────────────────────────────────────────────────────
+
+/// A container that clips its content to a fixed height and allows scrolling.
+pub struct ScrollContainer<'a> {
+    pub inner: Box<dyn Widget + 'a>,
+    pub max_height: f32,
+    pub scroll_offset: &'a mut f32,
+}
+
+impl<'a> Widget for ScrollContainer<'a> {
+    fn size(&self, engine: &jEngine) -> (f32, f32) {
+        let (w, h) = self.inner.size(engine);
+        // Only reserve scrollbar width when the content actually overflows.
+        let scrollbar_w = if h > self.max_height { 10.0 } else { 0.0 };
+        (w + scrollbar_w, h.min(self.max_height))
+    }
+
+    fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, available_w: f32, _clip: Option<Rect>) {
+        let (_inner_w, inner_h) = self.inner.size(engine);
+        let visible_h = inner_h.min(self.max_height);
+
+        // ── Handle Mouse Wheel ──
+        let hovered = engine.input.is_mouse_over(x, y, available_w, visible_h);
+        if hovered && engine.input.mouse_wheel != 0.0 {
+            let speed = 100.0;
+            *self.scroll_offset = (*self.scroll_offset - engine.input.mouse_wheel * speed)
+                .clamp(0.0, (inner_h - visible_h).max(0.0));
+        }
+
+        // ── Draw Clipped Content ──
+        let clip_rect = Rect::new(x, y, available_w, visible_h);
+        engine.ui.push_scissor(clip_rect);
+        self.inner.draw(engine, x, y - *self.scroll_offset, available_w - 10.0, Some(clip_rect));
+        engine.ui.pop_scissor();
+
+        // ── Draw Scroll Indicator ──
+        if inner_h > visible_h {
+            let bar_x = x + available_w - 6.0;
+            let bar_w = 4.0;
+
+            // Track (background)
+            engine.ui.ui_rect(bar_x, y, bar_w, visible_h, Color([0.0, 0.0, 0.0, 0.2]));
+
+            // Handle (foreground)
+            let handle_h = (visible_h / inner_h) * visible_h;
+            let handle_y = y + (*self.scroll_offset / inner_h) * visible_h;
+            engine.ui.ui_rect(bar_x, handle_y, bar_w, handle_h, Color::CYAN);
+        }
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+

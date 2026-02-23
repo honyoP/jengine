@@ -1,7 +1,7 @@
 pub mod atlas;
 pub mod particle_pipeline;
 pub mod pipeline;
-pub mod scanline_pipeline;
+pub mod post_process;
 pub mod sprite_atlas;
 pub mod text;
 pub mod text_pipeline;
@@ -16,7 +16,7 @@ use winit::window::Window;
 use atlas::Atlas;
 use particle_pipeline::{ParticlePipeline, ParticleVertex, create_particle_pipeline};
 use pipeline::{TilePipeline, TileVertex, create_tile_pipeline, orthographic_projection};
-use scanline_pipeline::{ScanlinePass, create_scanline_pass, resize_scanline_pass};
+use post_process::PostProcessStack;
 use sprite_atlas::SpriteAtlas;
 use text::Vertex as TextVertex;
 use text_pipeline::{TextPipeline, create_text_pipeline};
@@ -63,6 +63,9 @@ pub struct Renderer {
     /// Camera view-projection buffer — used by world passes (char, sprite, particle).
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    /// Storage buffer for entity animation offsets [f32; 2], indexed by entity_id.
+    entity_offsets_buffer: wgpu::Buffer,
+    entity_offsets_bind_group: wgpu::BindGroup,
     /// Bind group for the character/glyph tile atlas (always present).
     atlas_bind_group: wgpu::BindGroup,
     /// Bind group for the optional sprite atlas (None until load_sprite_folder is called).
@@ -100,8 +103,8 @@ pub struct Renderer {
     ui_vertex_buffer: Option<wgpu::Buffer>,
     ui_vertex_buffer_capacity: u32,
     ui_vertex_hash: u64,
-    /// Optional CRT scanline post-process pass.
-    scanline_pass: Option<ScanlinePass>,
+    /// Post-processing stack for "juice" effects.
+    pub post_process: PostProcessStack,
 }
 
 /// FNV-1a 64-bit hash — used to detect unchanged UI vertex data.
@@ -181,7 +184,27 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let atlas = Atlas::from_png(&device, &queue, png_bytes, tile_w, tile_h);
+        
+        // ── Entity Offsets Storage Buffer ──
+        // Pre-allocated for MAX_ANIMATED_ENTITIES entries (16 bytes each = [f32;4] for alignment).
+        let initial_offsets = vec![[0.0f32, 0.0, 0.0, 0.0]; crate::engine::MAX_ANIMATED_ENTITIES];
+        let entity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("entity_offsets_buffer"),
+            contents: bytemuck::cast_slice(&initial_offsets),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         let tile_pipeline = create_tile_pipeline(&device, format);
+        
+        let entity_offsets_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("entity_offsets_bg"),
+            layout: &tile_pipeline.entity_offsets_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: entity_offsets_buffer.as_entire_binding(),
+            }],
+        });
+
         let text_pipeline = create_text_pipeline(&device, format);
 
         let particle_pipeline = create_particle_pipeline(
@@ -298,11 +321,14 @@ impl Renderer {
             ],
         });
 
-        let scanline_pass = if use_scanlines {
-            Some(create_scanline_pass(&device, &config, window.scale_factor() as f32))
-        } else {
-            None
-        };
+        let mut post_process = PostProcessStack::new(&device, &config);
+        if use_scanlines {
+            post_process.add_effect(Box::new(post_process::ScanlineEffect::new(
+                &device,
+                config.format,
+                window.scale_factor() as f32,
+            )));
+        }
 
         Self {
             window,
@@ -318,6 +344,8 @@ impl Renderer {
             text_projection_bind_group,
             camera_buffer,
             camera_bind_group,
+            entity_offsets_buffer,
+            entity_offsets_bind_group,
             atlas_bind_group,
             sprite_atlas_bind_group: None,
             font_texture,
@@ -339,7 +367,7 @@ impl Renderer {
             ui_vertex_buffer: None,
             ui_vertex_buffer_capacity: 0,
             ui_vertex_hash: 0,
-            scanline_pass,
+            post_process,
         }
     }
 
@@ -366,6 +394,11 @@ impl Renderer {
         self.sprite_atlas = Some(atlas);
     }
 
+    /// Returns the metadata (UVs, spans) for a named sprite if it exists.
+    pub fn get_sprite_data(&self, name: &str) -> Option<crate::renderer::sprite_atlas::SpriteData> {
+        self.sprite_atlas.as_ref()?.get_data(name).cloned()
+    }
+
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         if new_size.width == 0 || new_size.height == 0 {
             return;
@@ -378,9 +411,7 @@ impl Renderer {
         self.queue
             .write_buffer(&self.projection_buffer, 0, bytemuck::cast_slice(&proj));
 
-        if let Some(ref mut sp) = self.scanline_pass {
-            resize_scanline_pass(sp, &self.device, &self.queue, &self.window, &self.config);
-        }
+        self.post_process.resize(&self.device, &self.queue, &self.config, self.window.scale_factor() as f32);
     }
 
     /// Upload a new camera view-projection matrix to the GPU.
@@ -390,6 +421,17 @@ impl Renderer {
             0,
             bytemuck::cast_slice(std::slice::from_ref(uniform)),
         );
+    }
+
+    /// Upload an array of [f32; 4] offsets for entity animation.
+    pub fn update_entity_offsets(&mut self, offsets: &[[f32; 4]]) {
+        if !offsets.is_empty() {
+            self.queue.write_buffer(
+                &self.entity_offsets_buffer,
+                0,
+                bytemuck::cast_slice(offsets),
+            );
+        }
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
@@ -535,9 +577,10 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let target_view: &wgpu::TextureView = match &self.scanline_pass {
-            Some(sp) => &sp.render_view,
-            None     => &view,
+        let target_view: &wgpu::TextureView = if self.post_process.is_empty() {
+            &view
+        } else {
+            self.post_process.main_render_target()
         };
 
         {
@@ -567,6 +610,7 @@ impl Renderer {
                     pass.set_pipeline(&self.tile_pipeline.render_pipeline);
                     pass.set_bind_group(0, &self.camera_bind_group, &[]);
                     pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+                    pass.set_bind_group(2, &self.entity_offsets_bind_group, &[]);
                     pass.set_vertex_buffer(0, vbuf.slice(..byte_len));
                     pass.draw(0..char_verts.len() as u32, 0..1);
                 }
@@ -581,6 +625,7 @@ impl Renderer {
                     pass.set_pipeline(&self.tile_pipeline.render_pipeline);
                     pass.set_bind_group(0, &self.camera_bind_group, &[]);
                     pass.set_bind_group(1, sprite_bg, &[]);
+                    pass.set_bind_group(2, &self.entity_offsets_bind_group, &[]);
                     pass.set_vertex_buffer(0, vbuf.slice(..byte_len));
                     pass.draw(0..sprite_verts.len() as u32, 0..1);
                 }
@@ -606,6 +651,7 @@ impl Renderer {
                     pass.set_pipeline(&self.tile_pipeline.render_pipeline);
                     pass.set_bind_group(0, &self.projection_bind_group, &[]);
                     pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+                    pass.set_bind_group(2, &self.entity_offsets_bind_group, &[]);
                     pass.set_vertex_buffer(0, ui_buf.slice(..byte_len));
                     pass.draw(0..count, 0..1);
                 }
@@ -633,28 +679,9 @@ impl Renderer {
             }
         }
 
-        // ── Scanline blit pass ────────────────────────────────────────────
-        if let Some(ref sp) = self.scanline_pass {
-            let mut blit = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scanline_blit"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            blit.set_pipeline(&sp.pipeline.pipeline);
-            blit.set_bind_group(0, &sp.scene_bind_group, &[]);
-            blit.set_bind_group(1, &sp.uniforms_bind_group, &[]);
-            blit.draw(0..6, 0..1);
+        // ── Post-processing stack ─────────────────────────────────────────
+        if !self.post_process.is_empty() {
+            self.post_process.run(&self.device, &self.queue, &mut encoder, &view);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

@@ -4,11 +4,12 @@ use std::collections::VecDeque;
 use std::f32::consts::TAU;
 
 use jengine::ecs::{Entity, World};
-use jengine::ui::{BorderStyle, Label};
-use jengine::ui::widgets::{Dropdown, ToggleSelector};
+use jengine::ui::{BorderStyle, Label, Padding};
+use jengine::ui::widgets::{Dropdown, ToggleSelector, Widget};
 use jengine::engine::{
     AnimationType, Color, jEngine, KeyCode,
 };
+use jengine::input::{ActionMap, InputSource};
 use jengine::renderer::text::Font;
 use jengine::scene::{Scene, SceneAction, SceneStack};
 use jengine::window::{WindowConfig, WindowMode, apply_window_settings};
@@ -97,11 +98,11 @@ impl UiState {
             player_xp:      450.0,
             player_max_xp:  1000.0,
         };
-        s.log("Welcome to jengine. Press [i] inventory, [l] log.", UI_ACCENT);
-        s.log("The ancient ruins feel uneasy today.", UI_TEXT);
-        s.log("A chill runs through the air.", UI_DIM);
-        s.log("You equip the rusty blade.", UI_TEXT);
-        s.log("You sense hostility nearby.", UI_RED);
+        s.log("Welcome to jengine. Press [i] to open the detailed inventory, and [l] to toggle this message log panel.", UI_ACCENT);
+        s.log("The ancient ruins feel uneasy today; the very stones seem to whisper secrets of a forgotten age.", UI_TEXT);
+        s.log("A chill runs through the air as you descend deeper into the baroque ruins.", UI_DIM);
+        s.log("You equip the rusty blade. It feels heavy, but reliable enough for the dangers that surely lurk ahead.", UI_TEXT);
+        s.log("You sense hostility nearby! Something is watching you from the shadows between the pillars.", UI_RED);
         s
     }
 
@@ -109,7 +110,7 @@ impl UiState {
         if self.log_messages.len() >= 60 {
             self.log_messages.pop_front();
         }
-        self.log_messages.push_back(LogEntry { text: text.to_string(), color });
+        self.log_messages.push_back(LogEntry { text: format!(":: {}", text), color });
     }
 }
 
@@ -231,6 +232,7 @@ fn spawn_glitch_ambient(world: &mut World, tick: u64, tile_w: u32, tile_h: u32) 
     }
 }
 
+#[allow(dead_code)]
 fn spawn_blood_burst(world: &mut World, px: f32, py: f32, tick: u64) {
     for i in 0..12u64 {
         let seed = tick.wrapping_mul(31).wrapping_add(i * 97)
@@ -323,14 +325,24 @@ impl MainMenuScene {
 }
 
 impl Scene for MainMenuScene {
+    fn on_enter(&mut self, engine: &mut jEngine) {
+        engine.audio.load_sound("UI_selection", "resources/audio/UI_selection.wav");
+        engine.audio.load_sound("UI_click", "resources/audio/UI_click.wav");
+    }
+
     fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         let items_len = 3;
+        let old_selected = self.selected;
 
         if engine.is_key_pressed(KeyCode::ArrowUp) && self.selected > 0 {
             self.selected -= 1;
         }
         if engine.is_key_pressed(KeyCode::ArrowDown) && self.selected + 1 < items_len {
             self.selected += 1;
+        }
+
+        if self.selected != old_selected {
+            engine.play_sound("UI_selection");
         }
 
         // Mouse hover
@@ -347,10 +359,14 @@ impl Scene for MainMenuScene {
             let item_y = by + th * (3.0 + i as f32 * 2.0);
             let item_x = bx + tw * 2.0;
             let item_w = panel_w - tw * 4.0;
-            if engine.ui.is_mouse_over(item_x, item_y, item_w, th) {
-                self.selected = i;
-                if engine.ui.was_clicked(item_x, item_y, item_w, th) && !engine.ui.click_consumed {
-                    engine.ui.click_consumed = true;
+            if engine.input.is_mouse_over(item_x, item_y, item_w, th) {
+                if self.selected != i {
+                    self.selected = i;
+                    engine.play_sound("UI_selection");
+                }
+                if engine.input.was_clicked(item_x, item_y, item_w, th) && !engine.input.mouse_consumed {
+                    engine.input.mouse_consumed = true;
+                    engine.play_sound("UI_click");
                     return self.activate(i, engine);
                 }
             }
@@ -358,6 +374,7 @@ impl Scene for MainMenuScene {
 
         if engine.is_key_pressed(KeyCode::Enter) {
             let sel = self.selected;
+            engine.play_sound("UI_click");
             return self.activate(sel, engine);
         }
 
@@ -385,7 +402,7 @@ impl Scene for MainMenuScene {
         let big_h  = th * 1.5;
         let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
         engine.ui.ui_text(title_x, by + (th - big_h) * 0.5 + th * 0.25, title, UI_BRIGHT, PANEL_BG, Some(big_h));
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
 
         // Menu items
         let labels = ["New Game", "Options", "Quit"];
@@ -401,7 +418,7 @@ impl Scene for MainMenuScene {
 
         // Footer hint
         let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select ", UI_DIM, PANEL_BG, None);
     }
 }
@@ -436,8 +453,14 @@ impl OptionsScene {
 }
 
 impl Scene for OptionsScene {
+    fn on_enter(&mut self, engine: &mut jEngine) {
+        engine.audio.load_sound("UI_selection", "resources/audio/UI_selection.wav");
+        engine.audio.load_sound("UI_click", "resources/audio/UI_click.wav");
+    }
+
     fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         if engine.is_key_pressed(KeyCode::Escape) {
+            engine.play_sound("UI_click");
             return SceneAction::Pop;
         }
         SceneAction::None
@@ -462,7 +485,7 @@ impl Scene for OptionsScene {
         let title = " OPTIONS ";
         let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
         engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
 
         let col_x  = bx + tw * 2.0;
         let ctrl_x = bx + tw * 14.0;
@@ -471,6 +494,7 @@ impl Scene for OptionsScene {
         // Row 0 — Resolution dropdown
         engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG, None);
         if let Some(_idx) = self.dd_resolution.draw(engine, ctrl_x, by + th * 3.5, ctrl_w) {
+            engine.play_sound("UI_click");
             let resolutions = ["1280×720", "1920×1080", "2560×1440", "3840×2160"];
             let (pw, ph) = match self.dd_resolution.selected {
                 0 => (1280u32, 720u32),
@@ -490,6 +514,7 @@ impl Scene for OptionsScene {
         // Row 1 — Window mode toggle
         engine.ui.ui_text(col_x, by + th * 6.0, "Window Mode", UI_TEXT, PANEL_BG, None);
         if let Some(idx) = self.ts_window_mode.draw(engine, ctrl_x, by + th * 6.0, ctrl_w) {
+            engine.play_sound("UI_selection");
             self.window_config.mode = match idx {
                 0 => WindowMode::Windowed,
                 1 => WindowMode::Borderless,
@@ -504,11 +529,11 @@ impl Scene for OptionsScene {
         let btn_w = btn_label.chars().count() as f32 * tw;
         let btn_x = bx + (panel_w - btn_w) * 0.5;
         let btn_y = by + panel_h - th * 2.5;
-        let hov = engine.ui.is_mouse_over(btn_x, btn_y, btn_w, th);
+        let hov = engine.input.is_mouse_over(btn_x, btn_y, btn_w, th);
         let fg = if hov { UI_BRIGHT } else { UI_TEXT };
         engine.ui.ui_text(btn_x, btn_y, btn_label, fg, PANEL_BG, None);
-        if engine.ui.was_clicked(btn_x, btn_y, btn_w, th) && !engine.ui.click_consumed {
-            engine.ui.click_consumed = true;
+        if engine.input.was_clicked(btn_x, btn_y, btn_w, th) && !engine.input.mouse_consumed {
+            engine.input.mouse_consumed = true;
             // We can't return an action from draw, so the Back button sets a flag
             // that update() checks. Instead, handle via Escape in update().
             // For mouse click, we close by emitting a synthetic escape next frame—
@@ -518,9 +543,29 @@ impl Scene for OptionsScene {
 
         // Footer hint
         let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y, " [Esc] Back ", UI_DIM, PANEL_BG, None);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum GameAction {
+    MoveUp,
+    MoveDown,
+    MoveLeft,
+    MoveRight,
+    MoveUpLeft,
+    MoveUpRight,
+    MoveDownLeft,
+    MoveDownRight,
+    Wait,
+    ToggleInventory,
+    ToggleLog,
+    ToggleTab,
+    ZoomIn,
+    ZoomOut,
+    Confirm,
+    Cancel,
 }
 
 // ── GameScene ─────────────────────────────────────────────────────────────────
@@ -536,10 +581,42 @@ struct GameScene {
     status_label:  Label,
     window_config: WindowConfig,
     zoom_target:   f32,
+    actions:       ActionMap<GameAction>,
 }
 
 impl GameScene {
     fn new() -> Self {
+        let mut actions = ActionMap::new();
+        // Standard roguelike keys
+        actions.bind(GameAction::MoveUp,    InputSource::Key(KeyCode::ArrowUp));
+        actions.bind(GameAction::MoveUp,    InputSource::Key(KeyCode::Numpad8));
+        actions.bind(GameAction::MoveDown,  InputSource::Key(KeyCode::ArrowDown));
+        actions.bind(GameAction::MoveDown,  InputSource::Key(KeyCode::Numpad2));
+        actions.bind(GameAction::MoveLeft,  InputSource::Key(KeyCode::ArrowLeft));
+        actions.bind(GameAction::MoveLeft,  InputSource::Key(KeyCode::Numpad4));
+        actions.bind(GameAction::MoveRight, InputSource::Key(KeyCode::ArrowRight));
+        actions.bind(GameAction::MoveRight, InputSource::Key(KeyCode::Numpad6));
+        
+        actions.bind(GameAction::MoveUpLeft,    InputSource::Key(KeyCode::Numpad7));
+        actions.bind(GameAction::MoveUpRight,   InputSource::Key(KeyCode::Numpad9));
+        actions.bind(GameAction::MoveDownLeft,  InputSource::Key(KeyCode::Numpad1));
+        actions.bind(GameAction::MoveDownRight, InputSource::Key(KeyCode::Numpad3));
+        
+        actions.bind(GameAction::Wait, InputSource::Key(KeyCode::Numpad5));
+        actions.bind(GameAction::Wait, InputSource::Key(KeyCode::Period));
+
+        actions.bind(GameAction::ToggleInventory, InputSource::Key(KeyCode::KeyI));
+        actions.bind(GameAction::ToggleLog,       InputSource::Key(KeyCode::KeyL));
+        actions.bind(GameAction::ToggleTab,       InputSource::Key(KeyCode::Tab));
+        
+        actions.bind(GameAction::ZoomIn,  InputSource::Key(KeyCode::Equal));
+        actions.bind(GameAction::ZoomIn,  InputSource::Key(KeyCode::NumpadAdd));
+        actions.bind(GameAction::ZoomOut, InputSource::Key(KeyCode::Minus));
+        actions.bind(GameAction::ZoomOut, InputSource::Key(KeyCode::NumpadSubtract));
+
+        actions.bind(GameAction::Confirm, InputSource::Key(KeyCode::Enter));
+        actions.bind(GameAction::Cancel,  InputSource::Key(KeyCode::Escape));
+
         Self {
             world:         World::new(),
             player:        None,
@@ -551,6 +628,7 @@ impl GameScene {
             status_label:  Label::new([0.0, 0.0], DEFAULT_TILE_H as f32, UI_TEXT.0),
             window_config: WindowConfig::default(),
             zoom_target:   1.0,
+            actions,
         }
     }
 
@@ -722,8 +800,8 @@ impl GameScene {
         engine.ui.ui_rect(0.0,        y0, p1w, th, PANEL_BG);
         engine.ui.ui_rect(p1w,        y0, p2w, th, Color([0.04, 0.08, 0.08, 1.0]));
         engine.ui.ui_rect(p1w + p2w,  y0, p3w, th, PANEL_BG);
-        engine.ui.ui_vline(p1w,       y0, th,  PANEL_BORDER);
-        engine.ui.ui_vline(p1w + p2w, y0, th,  PANEL_BORDER);
+        engine.ui.ui_vline(p1w,       y0, th,  1.0, PANEL_BORDER);
+        engine.ui.ui_vline(p1w + p2w, y0, th,  1.0, PANEL_BORDER);
 
         engine.ui.ui_text(tw * 0.5,         y0, "ACTIVE EFFECTS:", UI_DIM, Color::TRANSPARENT, None);
         engine.ui.ui_text(tw * 10.5,        y0, "[burning]", UI_RED, Color::TRANSPARENT, None);
@@ -734,7 +812,7 @@ impl GameScene {
         engine.ui.ui_text(p1w+p2w + tw*0.5, y0, "[f] attack  [r] parry  [w] dodge", UI_TEXT, Color::TRANSPARENT, None);
 
         engine.ui.ui_rect(0.0, y1, sw, th, PANEL_BG);
-        engine.ui.ui_hline(0.0, y1, sw, PANEL_BORDER);
+        engine.ui.ui_hline(0.0, y1, sw, 1.0, PANEL_BORDER);
         engine.ui.ui_text(0.0, y1, "ABILITIES:", UI_DIM, Color::TRANSPARENT, None);
 
         engine.ui.ui_rect(0.0, y2, sw, th, PANEL_BG);
@@ -746,7 +824,7 @@ impl GameScene {
                 Color([0.08, 0.12, 0.12, 1.0]));
             engine.ui.ui_text(sx + tw * 0.5, y2, s, UI_TEXT, Color::TRANSPARENT, None);
             if i + 1 < skills.len() {
-                engine.ui.ui_vline(sx + slot_w, y2, th, PANEL_BORDER);
+                engine.ui.ui_vline(sx + slot_w, y2, th, 1.0, PANEL_BORDER);
             }
         }
     }
@@ -767,17 +845,28 @@ impl GameScene {
         let inner_y   = panel_y + th;
         let inner_w   = panel_w - tw * 2.0;
         let inner_h   = panel_h - th * 2.0;
-        let max_rows  = (inner_h / th) as usize;
+        
+        let log_font_size = 12.0;
 
-        engine.ui.ui_box(panel_x, panel_y, panel_w, panel_h, BorderStyle::Single, PANEL_BORDER, LOG_BG);
+        engine.ui.ui_box(panel_x, panel_y, panel_w, panel_h, BorderStyle::Thin, PANEL_BORDER, LOG_BG);
         engine.ui.ui_text(panel_x + tw * 2.0, panel_y, " MESSAGE LOG ", UI_BRIGHT, LOG_BG, None);
 
-        let msgs: Vec<&LogEntry> = self.ui.log_messages.iter().rev().take(max_rows).collect();
-        for (row, entry) in msgs.into_iter().rev().enumerate() {
-            let row_y = inner_y + row as f32 * th;
-            let max_cols = (inner_w / tw) as usize;
-            let truncated: String = entry.text.chars().take(max_cols).collect();
-            engine.ui.ui_text(inner_x, row_y, &truncated, entry.color, Color::TRANSPARENT, None);
+        // Render messages from newest to oldest, filling from the bottom up.
+        let mut current_y = inner_y + inner_h - log_font_size;
+        
+        for entry in self.ui.log_messages.iter().rev() {
+            // Calculate how many lines this message needs.
+            // When using an explicit font size, ui_text_wrapped uses proportional width.
+            // For simplicity in calculation, we'll use the average character width or a safe margin.
+            let lines = jengine::ui::word_wrap(&entry.text, (inner_w / (log_font_size * 0.6)) as usize);
+            let msg_h = lines.len() as f32 * log_font_size;
+            
+            if current_y - msg_h < inner_y {
+                break; // Panel is full
+            }
+            
+            engine.ui.ui_text_wrapped(inner_x, current_y - msg_h + log_font_size, inner_w, msg_h, &entry.text, entry.color, Color::TRANSPARENT, Some(log_font_size));
+            current_y -= msg_h + (log_font_size * 0.2); // Add a small gap between messages
         }
     }
 
@@ -822,7 +911,7 @@ impl GameScene {
         }
 
         let footer_y = by + bh - th;
-        engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, 1.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y,
             " [Tab] Switch  [Esc] Close ", UI_DIM, Color::TRANSPARENT, None);
     }
@@ -834,7 +923,7 @@ impl GameScene {
 
         let col_w = w / 3.0;
         engine.ui.ui_text(x, y, "EQUIPMENT", UI_ACCENT, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(x, y + th, col_w, UI_DIM);
+        engine.ui.ui_hline(x, y + th, col_w, 1.0, UI_DIM);
 
         let slots = [
             ("Head",      "Iron Helmet"),
@@ -853,7 +942,7 @@ impl GameScene {
 
         let list_x = x + col_w + tw;
         engine.ui.ui_text(list_x, y, "ITEMS", UI_ACCENT, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(list_x, y + th, w - col_w - tw, UI_DIM);
+        engine.ui.ui_hline(list_x, y + th, w - col_w - tw, 1.0, UI_DIM);
 
         let items = [
             ("a)", "Meds x3",           UI_TEXT),
@@ -881,7 +970,7 @@ impl GameScene {
         let th = engine.tile_height() as f32;
 
         engine.ui.ui_text(x, y, "SKILL TREE", UI_ACCENT, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(x, y + th, _w, UI_DIM);
+        engine.ui.ui_hline(x, y + th, _w, 1.0, UI_DIM);
 
         let tree = [
             ("                [Combat]",               UI_BRIGHT),
@@ -908,7 +997,7 @@ impl GameScene {
         let th = engine.tile_height() as f32;
 
         engine.ui.ui_text(x, y, "FACTIONS & RELATIONSHIPS", UI_ACCENT, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(x, y + th, w, UI_DIM);
+        engine.ui.ui_hline(x, y + th, w, 1.0, UI_DIM);
 
         let factions = [
             ("The Wanderers",    "+100", "They trade freely with you.",
@@ -936,7 +1025,7 @@ impl GameScene {
             engine.ui.ui_text(col2 + tw * 5.0, fy, rep, rep_color, Color::TRANSPARENT, None);
             engine.ui.ui_text(col3, fy, attitude, UI_DIM,     Color::TRANSPARENT, None);
             engine.ui.ui_text(x,    fy + th, desc, UI_DIM,  Color::TRANSPARENT, None);
-            engine.ui.ui_hline(x,   fy + th * 2.0, w, Color([0.10, 0.15, 0.14, 1.0]));
+            engine.ui.ui_hline(x,   fy + th * 2.0, w, 1.0, Color([0.10, 0.15, 0.14, 1.0]));
         }
     }
 
@@ -961,7 +1050,7 @@ impl GameScene {
         let name = dialogue.npc_name.clone();
         let name_x = bx + (bw - name.chars().count() as f32 * tw) * 0.5;
         engine.ui.ui_text(name_x, by + th * 1.5, &name, UI_BRIGHT, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(bx + tw, by + th * 2.5, bw - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, by + th * 2.5, bw - tw * 2.0, 1.0, PANEL_BORDER);
 
         engine.ui.ui_text_wrapped(
             bx + tw * 2.0, by + th * 3.0,
@@ -970,7 +1059,7 @@ impl GameScene {
             UI_TEXT, Color::TRANSPARENT, None
         );
 
-        engine.ui.ui_hline(bx + tw, by + th * 7.0, bw - tw * 2.0, UI_DIM);
+        engine.ui.ui_hline(bx + tw, by + th * 7.0, bw - tw * 2.0, 1.0, UI_DIM);
 
         let selected = dialogue.selected;
         for (i, opt) in dialogue.options.iter().enumerate() {
@@ -986,7 +1075,7 @@ impl GameScene {
         }
 
         let footer_y = by + bh - th;
-        engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, 1.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y,
             " [↑/↓] Navigate  [Enter] Select  [Esc] Cancel ",
             UI_DIM, Color::TRANSPARENT, None);
@@ -1026,6 +1115,9 @@ impl Scene for GameScene {
         }
 
         self.initialized = true;
+        engine.audio.load_sound("UI_selection", "resources/audio/UI_selection.wav");
+        engine.audio.load_sound("UI_click", "resources/audio/UI_click.wav");
+        engine.audio.load_sound("Player_colliding", "resources/audio/Player_colliding.wav");
     }
 
     fn update(&mut self, engine: &mut jEngine) -> SceneAction {
@@ -1071,14 +1163,14 @@ impl Scene for GameScene {
             }
         }
 
-        // UI toggle keys
-        if engine.is_key_pressed(KeyCode::KeyI) {
+        // UI toggle actions
+        if self.actions.is_pressed(GameAction::ToggleInventory, &engine.input) {
             self.ui.inventory_open = !self.ui.inventory_open;
         }
-        if engine.is_key_pressed(KeyCode::KeyL) {
+        if self.actions.is_pressed(GameAction::ToggleLog, &engine.input) {
             self.ui.log_open = !self.ui.log_open;
         }
-        if engine.is_key_pressed(KeyCode::Tab) && self.ui.inventory_open {
+        if self.actions.is_pressed(GameAction::ToggleTab, &engine.input) && self.ui.inventory_open {
             self.ui.active_tab = match self.ui.active_tab {
                 Tab::Inventory     => Tab::SkillTree,
                 Tab::SkillTree     => Tab::Relationship,
@@ -1099,7 +1191,7 @@ impl Scene for GameScene {
             let mut tab_x = tw_f * 2.0 + tw_f;
             for (tab, label) in &tabs {
                 let tw_label = label.chars().count() as f32 * tw_f;
-                if engine.ui.was_clicked(tab_x, by, tw_label, th_f) {
+                if engine.input.was_clicked(tab_x, by, tw_label, th_f) {
                     self.ui.active_tab = *tab;
                 }
                 tab_x += tw_label + tw_f;
@@ -1107,18 +1199,18 @@ impl Scene for GameScene {
             let _ = sw; let _ = sh;
         }
 
-        // Camera zoom (+/-)
-        if engine.is_key_pressed(KeyCode::Equal) || engine.is_key_pressed(KeyCode::NumpadAdd) {
+        // Camera zoom actions
+        if self.actions.is_pressed(GameAction::ZoomIn, &engine.input) {
             self.zoom_target = (self.zoom_target * 1.25).min(4.0);
             engine.set_camera_zoom(self.zoom_target);
         }
-        if engine.is_key_pressed(KeyCode::Minus) || engine.is_key_pressed(KeyCode::NumpadSubtract) {
+        if self.actions.is_pressed(GameAction::ZoomOut, &engine.input) {
             self.zoom_target = (self.zoom_target / 1.25).max(0.25);
             engine.set_camera_zoom(self.zoom_target);
         }
 
-        // Escape priority chain
-        if engine.is_key_pressed(KeyCode::Escape) {
+        // Cancel priority chain (Escape)
+        if self.actions.is_pressed(GameAction::Cancel, &engine.input) {
             if self.ui.dialogue.is_some() {
                 self.ui.dialogue = None;
                 return SceneAction::None;
@@ -1133,8 +1225,14 @@ impl Scene for GameScene {
         // Dialogue navigation
         if let Some(ref mut dlg) = self.ui.dialogue {
             let n = dlg.options.len();
-            if engine.is_key_pressed(KeyCode::ArrowUp)   && dlg.selected > 0     { dlg.selected -= 1; }
-            if engine.is_key_pressed(KeyCode::ArrowDown)  && dlg.selected + 1 < n { dlg.selected += 1; }
+            let old_sel = dlg.selected;
+            if self.actions.is_pressed(GameAction::MoveUp, &engine.input)   && dlg.selected > 0     { dlg.selected -= 1; }
+            if self.actions.is_pressed(GameAction::MoveDown, &engine.input)  && dlg.selected + 1 < n { dlg.selected += 1; }
+            
+            if dlg.selected != old_sel {
+                engine.play_sound("UI_selection");
+            }
+
             for digit in 1..=9usize {
                 let key = match digit {
                     1 => KeyCode::Digit1, 2 => KeyCode::Digit2, 3 => KeyCode::Digit3,
@@ -1142,9 +1240,15 @@ impl Scene for GameScene {
                     7 => KeyCode::Digit7, 8 => KeyCode::Digit8, 9 => KeyCode::Digit9,
                     _ => continue,
                 };
-                if engine.is_key_pressed(key) && digit <= n { dlg.selected = digit - 1; }
+                if engine.is_key_pressed(key) && digit <= n { 
+                    if dlg.selected != digit - 1 {
+                        dlg.selected = digit - 1; 
+                        engine.play_sound("UI_selection");
+                    }
+                }
             }
-            if engine.is_key_pressed(KeyCode::Enter) {
+            if self.actions.is_pressed(GameAction::Confirm, &engine.input) {
+                engine.play_sound("UI_click");
                 let sel = dlg.selected;
                 let chosen = dlg.options.get(sel).cloned().unwrap_or_default();
                 self.ui.log(&format!(">> {chosen}"), UI_BRIGHT);
@@ -1164,31 +1268,14 @@ impl Scene for GameScene {
         let mut dx: i32 = 0;
         let mut dy: i32 = 0;
 
-        let any_held = engine.is_key_held(KeyCode::ArrowUp)
-            || engine.is_key_held(KeyCode::ArrowDown)
-            || engine.is_key_held(KeyCode::ArrowLeft)
-            || engine.is_key_held(KeyCode::ArrowRight)
-            || engine.is_key_held(KeyCode::Numpad8)
-            || engine.is_key_held(KeyCode::Numpad2)
-            || engine.is_key_held(KeyCode::Numpad4)
-            || engine.is_key_held(KeyCode::Numpad6)
-            || engine.is_key_held(KeyCode::Numpad7)
-            || engine.is_key_held(KeyCode::Numpad9)
-            || engine.is_key_held(KeyCode::Numpad1)
-            || engine.is_key_held(KeyCode::Numpad3);
+        let all_move_actions = [
+            GameAction::MoveUp, GameAction::MoveDown, GameAction::MoveLeft, GameAction::MoveRight,
+            GameAction::MoveUpLeft, GameAction::MoveUpRight, GameAction::MoveDownLeft, GameAction::MoveDownRight,
+            GameAction::Wait
+        ];
 
-        let any_pressed = engine.is_key_pressed(KeyCode::ArrowUp)
-            || engine.is_key_pressed(KeyCode::ArrowDown)
-            || engine.is_key_pressed(KeyCode::ArrowLeft)
-            || engine.is_key_pressed(KeyCode::ArrowRight)
-            || engine.is_key_pressed(KeyCode::Numpad8)
-            || engine.is_key_pressed(KeyCode::Numpad2)
-            || engine.is_key_pressed(KeyCode::Numpad4)
-            || engine.is_key_pressed(KeyCode::Numpad6)
-            || engine.is_key_pressed(KeyCode::Numpad7)
-            || engine.is_key_pressed(KeyCode::Numpad9)
-            || engine.is_key_pressed(KeyCode::Numpad1)
-            || engine.is_key_pressed(KeyCode::Numpad3);
+        let any_held = all_move_actions.iter().any(|&a| self.actions.is_held(a, &engine.input));
+        let any_pressed = all_move_actions.iter().any(|&a| self.actions.is_pressed(a, &engine.input));
 
         let should_move = if any_pressed {
             self.move_cooldown = 15;
@@ -1202,14 +1289,14 @@ impl Scene for GameScene {
         };
 
         if should_move {
-            if engine.is_key_held(KeyCode::ArrowUp)    || engine.is_key_held(KeyCode::Numpad8) { dy = -1; }
-            else if engine.is_key_held(KeyCode::ArrowDown)  || engine.is_key_held(KeyCode::Numpad2) { dy = 1; }
-            else if engine.is_key_held(KeyCode::ArrowLeft)  || engine.is_key_held(KeyCode::Numpad4) { dx = -1; }
-            else if engine.is_key_held(KeyCode::ArrowRight) || engine.is_key_held(KeyCode::Numpad6) { dx = 1; }
-            else if engine.is_key_held(KeyCode::Numpad7) { dx = -1; dy = -1; }
-            else if engine.is_key_held(KeyCode::Numpad9) { dx = 1;  dy = -1; }
-            else if engine.is_key_held(KeyCode::Numpad1) { dx = -1; dy = 1; }
-            else if engine.is_key_held(KeyCode::Numpad3) { dx = 1;  dy = 1; }
+            if self.actions.is_held(GameAction::MoveUp, &engine.input)    { dy = -1; }
+            else if self.actions.is_held(GameAction::MoveDown, &engine.input)  { dy = 1; }
+            else if self.actions.is_held(GameAction::MoveLeft, &engine.input)  { dx = -1; }
+            else if self.actions.is_held(GameAction::MoveRight, &engine.input) { dx = 1; }
+            else if self.actions.is_held(GameAction::MoveUpLeft, &engine.input) { dx = -1; dy = -1; }
+            else if self.actions.is_held(GameAction::MoveUpRight, &engine.input) { dx = 1;  dy = -1; }
+            else if self.actions.is_held(GameAction::MoveDownLeft, &engine.input) { dx = -1; dy = 1; }
+            else if self.actions.is_held(GameAction::MoveDownRight, &engine.input) { dx = 1;  dy = 1; }
         }
 
         if dx != 0 || dy != 0 {
@@ -1268,6 +1355,7 @@ impl Scene for GameScene {
                                 ],
                                 selected: 0,
                             });
+                            engine.play_sound("UI_selection");
                             self.ui.log("You approach the Mysterious Wanderer.", UI_TEXT);
                             return SceneAction::None;
                         }
@@ -1304,7 +1392,11 @@ impl Scene for GameScene {
                                 self.ui.log("You strike the enemy!", UI_TEXT);
                             }
                         } else {
-                            spawn_blood_burst(&mut self.world, px, py, engine.tick());
+                            engine.play_sound("Player_colliding");
+                            engine.play_animation(player, AnimationType::Bash {
+                                direction: [dx as f32, dy as f32],
+                                magnitude: 4.0,
+                            });
                             self.ui.log("You bash against the wall.", UI_DIM);
                         }
                     }
@@ -1355,6 +1447,32 @@ impl Scene for GameScene {
         if let Some(player) = self.player {
             if let Some(pos) = self.world.get::<Position>(player) {
                 engine.draw_sprite_entity(pos.x, pos.y, "player", player, Color::WHITE);
+                
+                // Debug wireframe for player (using world_to_screen for accurate placement)
+                if engine.debug.active {
+                    let tw = engine.tile_width() as f32;
+                    let th = engine.tile_height() as f32;
+                    let [s_x, s_y] = engine.world_to_screen(pos.x as f32 * tw, pos.y as f32 * th);
+                    let z = engine.camera_zoom();
+                    engine.ui.debug_box(s_x, s_y, tw * z, th * z, Color::RED);
+                }
+            }
+        }
+
+        // Debug wireframes for enemies
+        if engine.debug.active {
+            let tw = engine.tile_width() as f32;
+            let th = engine.tile_height() as f32;
+            let z = engine.camera_zoom();
+            
+            for (_e, (pos, _)) in self.world.query_multi::<(Position, Enemy)>() {
+                let [s_x, s_y] = engine.world_to_screen(pos.x as f32 * tw, pos.y as f32 * th);
+                engine.ui.debug_box(s_x, s_y, tw * z, th * z, Color::RED);
+            }
+            
+            for (_e, (pos, size, _)) in self.world.query_multi::<(Position, Size, BigEnemy)>() {
+                let [s_x, s_y] = engine.world_to_screen(pos.x as f32 * tw, pos.y as f32 * th);
+                engine.ui.debug_box(s_x, s_y, size.w as f32 * tw * z, size.h as f32 * th * z, Color::RED);
             }
         }
 
@@ -1370,6 +1488,101 @@ impl Scene for GameScene {
         self.draw_log_panel(engine);
         self.draw_inventory_modal(engine);
         self.draw_dialogue_modal(engine);
+    }
+
+    fn debug_render(&mut self, engine: &mut jEngine) -> Option<Box<dyn jengine::ui::widgets::Widget>> {
+        use jengine::ui::widgets::{VStack, TextWidget};
+        use jengine::ui::Alignment;
+
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        let fs = 12.0;
+
+        // ── 1. Screen-Space Hover Logic (Standalone Popup) ──
+        let [mx, my] = engine.input.mouse_pos;
+        let [wx, wy] = engine.screen_to_world(mx, my);
+        let (gx, gy) = (
+            (wx / tw).floor() as u32,
+            (wy / th).floor() as u32,
+        );
+        
+        // Highlight tile in world-space
+        let [s_x, s_y] = engine.world_to_screen(gx as f32 * tw, gy as f32 * th);
+        let z = engine.camera_zoom();
+        engine.ui.debug_box(s_x, s_y, tw * z, th * z, Color::CYAN);
+
+        // Collect entities for the popup
+        let mut hovered_entities = Vec::new();
+        for (entity, pos) in self.world.query::<Position>() {
+            if pos.x == gx && pos.y == gy {
+                let components = self.world.components_for_entity(entity);
+                let short_names: Vec<String> = components.iter()
+                    .map(|&full_name| full_name.split("::").last().unwrap_or(full_name).to_string())
+                    .collect();
+                hovered_entities.push((entity, short_names));
+            }
+        }
+
+        // Draw standalone popup next to cursor using a styled VStack
+        if !hovered_entities.is_empty() {
+            let h_x = mx + 15.0;
+            let h_y = my + 15.0;
+            let panel_w = 220.0;
+            
+            let mut popup = VStack::new(Alignment::Start)
+                .with_padding(Padding::all(5.0))
+                .with_bg(Color([0.05, 0.05, 0.1, 0.8]))
+                .with_border(BorderStyle::Thin, Color::CYAN);
+            
+            for (entity, comps) in hovered_entities {
+                popup = popup.add(TextWidget {
+                    text: format!("E{}: {}", entity.id(), comps.join(", ")),
+                    size: Some(fs),
+                    color: Color::WHITE,
+                });
+            }
+            Widget::draw(&mut popup, engine, h_x, h_y, panel_w, None);
+        }
+
+        // ── 2. Build Draggable UI Content ──
+        let total_entities = self.world.entity_count();
+        let mut stack = VStack::new(Alignment::Start).with_spacing(2.0);
+        
+        stack = stack.add(TextWidget {
+            text: format!("Entities (Total): {}", total_entities),
+            size: Some(fs),
+            color: Color::DARK_GRAY,
+        });
+
+        stack = stack.add(TextWidget {
+            text: "--- WORLD LIST ---".to_string(),
+            size: Some(fs),
+            color: Color::DARK_GRAY,
+        });
+
+        // Increase fetch limit to 100 to ensure we have enough content to scroll
+        let entities = self.world.entities_debug_info_paginated(0, 100);
+        for (entity, components) in entities {
+            let mut short_comps = Vec::new();
+            for c in components {
+                short_comps.push(c.split("::").last().unwrap_or(c));
+            }
+            stack = stack.add(TextWidget {
+                text: format!("E{}: {}", entity.id(), short_comps.join(", ")),
+                size: Some(fs),
+                color: Color::DARK_BLUE,
+            });
+        }
+        
+        if total_entities > 10 {
+            stack = stack.add(TextWidget {
+                text: "... and more".to_string(),
+                size: Some(fs),
+                color: Color([0.4, 0.4, 0.4, 1.0]),
+            });
+        }
+
+        Some(Box::new(stack))
     }
 }
 
@@ -1399,10 +1612,17 @@ impl PauseOverlayScene {
 impl Scene for PauseOverlayScene {
     fn is_transparent(&self) -> bool { true }
 
+    fn on_enter(&mut self, engine: &mut jEngine) {
+        engine.audio.load_sound("UI_selection", "resources/audio/UI_selection.wav");
+        engine.audio.load_sound("UI_click", "resources/audio/UI_click.wav");
+    }
+
     fn update(&mut self, engine: &mut jEngine) -> SceneAction {
         let items_len = 4;
+        let old_selected = self.selected;
 
         if engine.is_key_pressed(KeyCode::Escape) {
+            engine.play_sound("UI_click");
             return SceneAction::Pop;
         }
         if engine.is_key_pressed(KeyCode::ArrowUp) && self.selected > 0 {
@@ -1410,6 +1630,10 @@ impl Scene for PauseOverlayScene {
         }
         if engine.is_key_pressed(KeyCode::ArrowDown) && self.selected + 1 < items_len {
             self.selected += 1;
+        }
+
+        if self.selected != old_selected {
+            engine.play_sound("UI_selection");
         }
 
         // Mouse hover
@@ -1426,10 +1650,14 @@ impl Scene for PauseOverlayScene {
             let item_y = by + th * (4.0 + i as f32 * 2.0);
             let item_x = bx + tw * 2.0;
             let item_w = panel_w - tw * 4.0;
-            if engine.ui.is_mouse_over(item_x, item_y, item_w, th) {
-                self.selected = i;
-                if engine.ui.was_clicked(item_x, item_y, item_w, th) && !engine.ui.click_consumed {
-                    engine.ui.click_consumed = true;
+            if engine.input.is_mouse_over(item_x, item_y, item_w, th) {
+                if self.selected != i {
+                    self.selected = i;
+                    engine.play_sound("UI_selection");
+                }
+                if engine.input.was_clicked(item_x, item_y, item_w, th) && !engine.input.mouse_consumed {
+                    engine.input.mouse_consumed = true;
+                    engine.play_sound("UI_click");
                     return self.activate(i, engine);
                 }
             }
@@ -1437,6 +1665,7 @@ impl Scene for PauseOverlayScene {
 
         if engine.is_key_pressed(KeyCode::Enter) {
             let sel = self.selected;
+            engine.play_sound("UI_click");
             return self.activate(sel, engine);
         }
 
@@ -1463,7 +1692,7 @@ impl Scene for PauseOverlayScene {
         let title = "PAUSED";
         let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
         engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
 
         // Menu items
         let labels = ["Resume", "Options", "Quit to Menu", "Quit App"];
@@ -1479,7 +1708,7 @@ impl Scene for PauseOverlayScene {
 
         // Footer hint
         let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
+        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select  [Esc] Resume ", UI_DIM, PANEL_BG, None);
     }
 }

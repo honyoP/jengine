@@ -68,8 +68,14 @@ impl UiWidgetsDemo {
 }
 
 impl Game for UiWidgetsDemo {
+    fn on_enter(&mut self, engine: &mut jEngine) {
+        engine.audio.load_sound("UI_selection", "resources/audio/UI_selection.wav");
+        engine.audio.load_sound("UI_click", "resources/audio/UI_click.wav");
+    }
+
     fn update(&mut self, engine: &mut jEngine) {
         if engine.is_key_pressed(KeyCode::Escape) {
+            engine.play_sound("UI_click");
             engine.request_quit();
         }
         // Animate bar values with a slow sine wave.
@@ -102,7 +108,7 @@ impl Game for UiWidgetsDemo {
         engine.ui.ui_rect(0.0, 0.0, sw, th, Color([0.08, 0.12, 0.12, 1.0]));
         engine.ui.ui_text(tw, 0.0, "jengine — UI Widgets Example", HEAD, Color::TRANSPARENT, None);
         engine.ui.ui_text(sw - tw * 13.0, 0.0, "[Esc] quit", DIM, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(0.0, th, sw, BORDER);
+        engine.ui.ui_hline(0.0, th, sw, 1.0, BORDER);
 
         // Split into left and right columns.
         let col_w = sw * 0.5;
@@ -112,7 +118,7 @@ impl Game for UiWidgetsDemo {
         draw_left_column(engine, tw, th, col_w, top_y, self.hp_pct, self.xp_pct);
 
         // Vertical divider between the two columns.
-        engine.ui.ui_vline(col_w, top_y, sh - top_y, BORDER);
+        engine.ui.ui_vline(col_w, top_y, sh - top_y, 1.0, BORDER);
 
         // ── RIGHT COLUMN: Interactive widgets ────────────────────────────────
         draw_right_column(engine, tw, th, col_w, top_y, &mut self.dropdown, &mut self.toggle, &mut self.input);
@@ -136,18 +142,18 @@ fn draw_left_column(
     engine.ui.ui_text(x, y, "BORDERED BOXES", HEAD, Color::TRANSPARENT, None);
     y += th * 1.5;
 
-    // Single-line border.
-    engine.ui.ui_text(x, y, "BorderStyle::Single", DIM, Color::TRANSPARENT, None);
+    // Thin border.
+    engine.ui.ui_text(x, y, "BorderStyle::Thin", DIM, Color::TRANSPARENT, None);
     y += th;
-    engine.ui.ui_box(x, y, col_w - tw * 2.0, th * 3.0, BorderStyle::Single, BORDER, Color([0.06, 0.09, 0.09, 1.0]));
-    engine.ui.ui_text(x + tw, y + th, "Content inside a Single-border box.", BODY, Color::TRANSPARENT, None);
+    engine.ui.ui_box(x, y, col_w - tw * 2.0, th * 3.0, BorderStyle::Thin, BORDER, Color([0.06, 0.09, 0.09, 1.0]));
+    engine.ui.ui_text(x + tw, y + th, "Content inside a Thin-border box.", BODY, Color::TRANSPARENT, None);
     y += th * 4.0;
 
-    // Double-line border.
-    engine.ui.ui_text(x, y, "BorderStyle::Double", DIM, Color::TRANSPARENT, None);
+    // Thick border.
+    engine.ui.ui_text(x, y, "BorderStyle::Thick", DIM, Color::TRANSPARENT, None);
     y += th;
-    engine.ui.ui_box(x, y, col_w - tw * 2.0, th * 3.0, BorderStyle::Double, BORDER, Color([0.06, 0.09, 0.09, 1.0]));
-    engine.ui.ui_text(x + tw, y + th, "Content inside a Double-border box.", BODY, Color::TRANSPARENT, None);
+    engine.ui.ui_box(x, y, col_w - tw * 2.0, th * 3.0, BorderStyle::Thick, BORDER, Color([0.06, 0.09, 0.09, 1.0]));
+    engine.ui.ui_text(x + tw, y + th, "Content inside a Thick-border box.", BODY, Color::TRANSPARENT, None);
     y += th * 5.0;
 
     // Section: Separators
@@ -155,17 +161,17 @@ fn draw_left_column(
     y += th * 1.5;
     engine.ui.ui_text(x, y, "ui_hline:", DIM, Color::TRANSPARENT, None);
     y += th;
-    engine.ui.ui_hline(x, y, col_w - tw * 2.0, BORDER);
+    engine.ui.ui_hline(x, y, col_w - tw * 2.0, 1.0, BORDER);
     y += th * 1.5;
     engine.ui.ui_text(x, y, "ui_vline (right edge):", DIM, Color::TRANSPARENT, None);
-    engine.ui.ui_vline(col_w - tw * 2.0, y, th * 3.0, BORDER);
+    engine.ui.ui_vline(col_w - tw * 2.0, y, th * 3.0, 1.0, BORDER);
     y += th * 4.5;
 
     // Section: Progress bars
     engine.ui.ui_text(x, y, "PROGRESS BARS", HEAD, Color::TRANSPARENT, None);
     y += th * 1.5;
 
-    engine.ui.ui_text(x, y, &format!("HP  {:.0}%", hp_pct * 100.0), BODY, Color::TRANSPARENT, None);
+    engine.ui.ui_text(x, y, &format!("HP  {:.0}%", hp_pct * 100.0), BODY, Color::TRANSPARENT, Some(24.0));
     y += th;
     engine.ui.ui_progress_bar(x, y, col_w - tw * 2.0, th, hp_pct, HP_ON, HP_OFF);
     y += th * 1.5;
@@ -210,8 +216,8 @@ fn draw_right_column(
     // ── Dropdown ──────────────────────────────────────────────────────────────
     engine.ui.ui_text(x, y, "Dropdown  (click to expand):", DIM, Color::TRANSPARENT, None);
     y += th;
-    if let Some(idx) = dropdown.draw(engine, x, y, widget_w) {
-        let _ = idx; // selection changed — could react here
+    if let Some(_idx) = dropdown.draw(engine, x, y, widget_w) {
+        engine.play_sound("UI_click");
     }
     y += th;
     engine.ui.ui_text(
@@ -225,8 +231,8 @@ fn draw_right_column(
     // ── ToggleSelector ────────────────────────────────────────────────────────
     engine.ui.ui_text(x, y, "ToggleSelector  ([<] / [>] buttons):", DIM, Color::TRANSPARENT, None);
     y += th;
-    if let Some(idx) = toggle.draw(engine, x, y, widget_w) {
-        let _ = idx;
+    if let Some(_idx) = toggle.draw(engine, x, y, widget_w) {
+        engine.play_sound("UI_selection");
     }
     y += th;
     engine.ui.ui_text(
@@ -251,7 +257,7 @@ fn draw_right_column(
     y += th * 3.0;
 
     // ── Reference card ────────────────────────────────────────────────────────
-    engine.ui.ui_hline(x, y, widget_w, BORDER);
+    engine.ui.ui_hline(x, y, widget_w, 1.0, BORDER);
     y += th;
     engine.ui.ui_text(x, y, "QUICK REFERENCE", HEAD, Color::TRANSPARENT, None);
     y += th * 1.5;
@@ -259,10 +265,10 @@ fn draw_right_column(
     let notes = [
         ("ui_rect(x,y,w,h,col)",         "solid colour quad"),
         ("ui_box(x,y,w,h,style,fg,bg)",  "bordered panel"),
-        ("ui_text(x,y,str,fg,bg)",        "monospaced line"),
+        ("ui_text(x,y,str,fg,bg,sz)",     "MTSDF line"),
         ("ui_text_wrapped(x,y,w,h,...)",  "word-wrapped block"),
-        ("ui_hline(x,y,w,col)",           "horizontal rule"),
-        ("ui_vline(x,y,h,col)",           "vertical rule"),
+        ("ui_hline(x,y,w,thick,col)",     "horizontal rule"),
+        ("ui_vline(x,y,h,thick,col)",     "vertical rule"),
         ("ui_progress_bar(x,y,w,h,pct,…)", "filled bar"),
         ("Dropdown::draw(eng,x,y,w)",     "→ Option<selected_idx>"),
         ("ToggleSelector::draw(eng,x,y,w)", "→ Option<selected_idx>"),

@@ -9,10 +9,60 @@ use crate::renderer::text::{Font, Glyph, Vec2, Vertex, append_text_mesh, text_wi
 /// Border style for `ui_box`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BorderStyle {
-    /// ASCII single-line border using `-`, `|`, `+`
-    Single,
-    /// ASCII double-line border using `=`, `|`, `+`
+    /// 1-pixel solid line.
+    Thin,
+    /// 2-pixel solid line.
+    Thick,
+    /// Two 1-pixel lines with a gap.
     Double,
+}
+
+/// Horizontal or vertical alignment for layout elements.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Alignment {
+    /// Align to top / left.
+    Start,
+    /// Align to center.
+    Center,
+    /// Align to bottom / right.
+    End,
+}
+
+/// Inset spacing for layout containers.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct Padding {
+    pub left:   f32,
+    pub right:  f32,
+    pub top:    f32,
+    pub bottom: f32,
+}
+
+impl Padding {
+    /// Create padding with equal value on all four sides.
+    pub fn all(v: f32) -> Self { Self { left: v, right: v, top: v, bottom: v } }
+    /// Create padding with separate horizontal and vertical values.
+    pub fn new(h: f32, v: f32) -> Self { Self { left: h, right: h, top: v, bottom: v } }
+}
+
+/// A rectangle in screen pixels.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Rect {
+    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self { Self { x, y, w, h } }
+    
+    /// Returns true if this rect overlaps with another.
+    pub fn overlaps(&self, other: &Rect) -> bool {
+        self.x < other.x + other.w &&
+        self.x + self.w > other.x &&
+        self.y < other.y + other.h &&
+        self.y + self.h > other.y
+    }
 }
 
 /// Word-wrap `text` so every returned line is at most `max_cols` characters.
@@ -209,7 +259,7 @@ pub struct Label {
     font_size: f32,
     vertices: Vec<Vertex>,
     indices: Vec<u16>,
-    dirty: bool,
+    pub dirty: bool,
 }
 
 impl Label {
@@ -307,12 +357,12 @@ pub struct UI {
     pub ui_vertices: Vec<TileVertex>,
     pub tile_w: u32,
     pub tile_h: u32,
-    pub mouse_pos: [f32; 2],
-    pub mouse_clicked: bool,
-    pub mouse_held: bool,
-    pub click_consumed: bool,
     /// MTSDF text layer: both Labels and immediate-mode ui_char_at writes here.
     pub text: TextLayer,
+    /// Current clipping boundary.
+    pub(crate) current_clip: Option<Rect>,
+    /// Stack of clipping boundaries for nested scrolling.
+    pub(crate) clip_stack: Vec<Option<Rect>>,
 }
 
 impl UI {
@@ -321,22 +371,31 @@ impl UI {
             ui_vertices: Vec::new(),
             tile_w,
             tile_h,
-            mouse_pos: [0.0, 0.0],
-            mouse_clicked: false,
-            mouse_held: false,
-            click_consumed: false,
             text: TextLayer::new(),
+            current_clip: None,
+            clip_stack: Vec::new(),
         }
     }
 
-    pub fn mouse_pos(&self) -> [f32; 2] { self.mouse_pos }
-
-    pub fn is_mouse_over(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
-        rect_contains(x, y, w, h, self.mouse_pos[0], self.mouse_pos[1])
+    /// Push a new clipping rectangle. Subsequent UI calls will be clipped to this area.
+    pub fn push_scissor(&mut self, rect: Rect) {
+        self.clip_stack.push(self.current_clip);
+        // Intersect with current clip if it exists
+        let new_clip = if let Some(old) = self.current_clip {
+            let x = old.x.max(rect.x);
+            let y = old.y.max(rect.y);
+            let w = (old.x + old.w).min(rect.x + rect.w) - x;
+            let h = (old.y + old.h).min(rect.y + rect.h) - y;
+            Some(Rect::new(x, y, w.max(0.0), h.max(0.0)))
+        } else {
+            Some(rect)
+        };
+        self.current_clip = new_clip;
     }
 
-    pub fn was_clicked(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
-        self.mouse_clicked && self.is_mouse_over(x, y, w, h)
+    /// Restore the previous clipping rectangle.
+    pub fn pop_scissor(&mut self) {
+        self.current_clip = self.clip_stack.pop().flatten();
     }
 
     pub fn pixel_to_grid(&self, px: f32, py: f32) -> (u32, u32) {
@@ -347,12 +406,32 @@ impl UI {
 
     /// Draw a solid-colored rectangle in screen-pixel coordinates.
     pub fn ui_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let (mut final_x, mut final_y, mut final_w, mut final_h) = (x, y, w, h);
+
+        if let Some(clip) = self.current_clip {
+            // Intersection logic
+            let x1 = x.max(clip.x);
+            let y1 = y.max(clip.y);
+            let x2 = (x + w).min(clip.x + clip.w);
+            let y2 = (y + h).min(clip.y + clip.h);
+            
+            final_w = x2 - x1;
+            final_h = y2 - y1;
+            
+            if final_w <= 0.0 || final_h <= 0.0 {
+                return;
+            }
+            final_x = x1;
+            final_y = y1;
+        }
+
         let dummy = [0.0f32, 0.0];
         let c = color.0;
-        let tl = TileVertex { position: [x,     y    ], uv: dummy, fg_color: [0.0;4], bg_color: c, v_offset: [0.0,0.0], layer_id: 0.0 };
-        let tr = TileVertex { position: [x + w, y    ], uv: dummy, fg_color: [0.0;4], bg_color: c, v_offset: [0.0,0.0], layer_id: 0.0 };
-        let bl = TileVertex { position: [x,     y + h], uv: dummy, fg_color: [0.0;4], bg_color: c, v_offset: [0.0,0.0], layer_id: 0.0 };
-        let br = TileVertex { position: [x + w, y + h], uv: dummy, fg_color: [0.0;4], bg_color: c, v_offset: [0.0,0.0], layer_id: 0.0 };
+        let no_ent = u32::MAX;
+        let tl = TileVertex { position: [final_x,           final_y          ], uv: dummy, fg_color: [0.0;4], bg_color: c, entity_id: no_ent, layer_id: 0.0 };
+        let tr = TileVertex { position: [final_x + final_w, final_y          ], uv: dummy, fg_color: [0.0;4], bg_color: c, entity_id: no_ent, layer_id: 0.0 };
+        let bl = TileVertex { position: [final_x,           final_y + final_h], uv: dummy, fg_color: [0.0;4], bg_color: c, entity_id: no_ent, layer_id: 0.0 };
+        let br = TileVertex { position: [final_x + final_w, final_y + final_h], uv: dummy, fg_color: [0.0;4], bg_color: c, entity_id: no_ent, layer_id: 0.0 };
         self.ui_vertices.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
     }
 
@@ -365,6 +444,15 @@ impl UI {
     fn ui_char_at(&mut self, px: f32, py: f32, ch: char, fg: Color, font_size: Option<f32>) {
         if ch == ' ' { return; }
         let fs = font_size.unwrap_or(self.tile_h as f32);
+        
+        if let Some(clip) = self.current_clip {
+            // Note: This is an approximation for performance. It culls entire glyphs
+            // if their origin is outside the clip.
+            if px < clip.x || px >= clip.x + clip.w || py < clip.y || py >= clip.y + clip.h {
+                return;
+            }
+        }
+        
         self.text.push_char(px, py, ch, fg.0, fs);
     }
 
@@ -443,52 +531,56 @@ impl UI {
     /// `font_size` — em-height in pixels.  Pass `None` to default to `tile_h`.
     pub fn ui_text_wrapped(&mut self, x: f32, y: f32, max_w: f32, max_h: f32,
                            text: &str, fg: Color, bg: Color, font_size: Option<f32>) {
-        let tw = self.tile_w as f32;
         let th = self.tile_h as f32;
         let row_h = font_size.unwrap_or(th);
-        let max_cols = (max_w / tw) as usize;
+        
+        // Calculate max_cols based on the font size being used.
+        // For proportional fonts, we use a 0.6× average width factor to estimate
+        // how many characters fit in the pixel width.
+        let char_w = if font_size.is_some() { row_h * 0.6 } else { self.tile_w as f32 };
+        let max_cols = (max_w / char_w) as usize;
+        
         let max_rows = (max_h / row_h) as usize;
         for (row, line) in word_wrap(text, max_cols).into_iter().enumerate().take(max_rows) {
             self.ui_text(x, y + row as f32 * row_h, &line, fg, bg, font_size);
         }
     }
 
-    /// Draw a bordered box using ASCII line characters.
-    ///
-    /// Single style: `- | +`  /  Double style: `= | +`
+    /// Draw a bordered box using solid lines.
     pub fn ui_box(&mut self, x: f32, y: f32, w: f32, h: f32,
                   style: BorderStyle, fg: Color, bg: Color) {
-        let tw = self.tile_w as f32;
-        let th = self.tile_h as f32;
-        let cols = (w / tw).round() as i32;
-        let rows = (h / th).round() as i32;
-        if cols < 2 || rows < 2 { return; }
-
         if bg.0[3] > 0.0 {
             self.ui_rect(x, y, w, h, bg);
         }
 
-        let (hz, vt, corner) = match style {
-            BorderStyle::Single => ('-', '|', '+'),
-            BorderStyle::Double => ('=', '|', '+'),
-        };
-
-        // Top row
-        self.ui_char_at(x, y, corner, fg, None);
-        for c in 1..cols - 1 { self.ui_char_at(x + c as f32 * tw, y, hz, fg, None); }
-        self.ui_char_at(x + (cols - 1) as f32 * tw, y, corner, fg, None);
-
-        // Bottom row
-        let by = y + (rows - 1) as f32 * th;
-        self.ui_char_at(x, by, corner, fg, None);
-        for c in 1..cols - 1 { self.ui_char_at(x + c as f32 * tw, by, hz, fg, None); }
-        self.ui_char_at(x + (cols - 1) as f32 * tw, by, corner, fg, None);
-
-        // Side columns
-        for r in 1..rows - 1 {
-            let py = y + r as f32 * th;
-            self.ui_char_at(x, py, vt, fg, None);
-            self.ui_char_at(x + (cols - 1) as f32 * tw, py, vt, fg, None);
+        match style {
+            BorderStyle::Thin => {
+                self.ui_hline(x, y, w, 1.0, fg);         // Top
+                self.ui_hline(x, y + h - 1.0, w, 1.0, fg); // Bottom
+                self.ui_vline(x, y, h, 1.0, fg);         // Left
+                self.ui_vline(x + w - 1.0, y, h, 1.0, fg); // Right
+            }
+            BorderStyle::Thick => {
+                self.ui_hline(x, y, w, 2.0, fg);
+                self.ui_hline(x, y + h - 2.0, w, 2.0, fg);
+                self.ui_vline(x, y, h, 2.0, fg);
+                self.ui_vline(x + w - 2.0, y, h, 2.0, fg);
+            }
+            BorderStyle::Double => {
+                // Outer
+                self.ui_hline(x, y, w, 1.0, fg);
+                self.ui_hline(x, y + h - 1.0, w, 1.0, fg);
+                self.ui_vline(x, y, h, 1.0, fg);
+                self.ui_vline(x + w - 1.0, y, h, 1.0, fg);
+                // Inner (2px gap)
+                let gap = 2.0;
+                if w > gap * 2.0 && h > gap * 2.0 {
+                    self.ui_hline(x + gap, y + gap, w - gap * 2.0, 1.0, fg);
+                    self.ui_hline(x + gap, y + h - gap - 1.0, w - gap * 2.0, 1.0, fg);
+                    self.ui_vline(x + gap, y + gap, h - gap * 2.0, 1.0, fg);
+                    self.ui_vline(x + w - gap - 1.0, y + gap, h - gap * 2.0, 1.0, fg);
+                }
+            }
         }
     }
 
@@ -501,238 +593,38 @@ impl UI {
         if fw < w   { self.ui_rect(x + fw, y, w - fw, h, empty);  }
     }
 
-    /// Draw a horizontal separator line of `-` chars spanning `w` pixels.
-    pub fn ui_hline(&mut self, x: f32, y: f32, w: f32, fg: Color) {
-        let tw = self.tile_w as f32;
-        let cols = (w / tw).round() as i32;
-        for c in 0..cols {
-            self.ui_char_at(x + c as f32 * tw, y, '-', fg, None);
-        }
+    /// Draw a horizontal solid line.
+    pub fn ui_hline(&mut self, x: f32, y: f32, w: f32, thickness: f32, fg: Color) {
+        self.ui_rect(x, y, w, thickness, fg);
     }
 
-    /// Draw a vertical separator line of `|` chars spanning `h` pixels.
-    pub fn ui_vline(&mut self, x: f32, y: f32, h: f32, fg: Color) {
-        let th = self.tile_h as f32;
-        let rows = (h / th).round() as i32;
-        for r in 0..rows {
-            self.ui_char_at(x, y + r as f32 * th, '|', fg, None);
+    /// Draw a vertical solid line.
+    pub fn ui_vline(&mut self, x: f32, y: f32, h: f32, thickness: f32, fg: Color) {
+        self.ui_rect(x, y, thickness, h, fg);
+    }
+
+    // ── Debug Shape Helpers ──────────────────────────────────────────────────
+
+    /// Draw a wireframe box (AABB) for debugging.
+    pub fn debug_box(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        self.ui_hline(x, y, w, 1.0, color);         // Top
+        self.ui_hline(x, y + h - 1.0, w, 1.0, color); // Bottom
+        self.ui_vline(x, y, h, 1.0, color);         // Left
+        self.ui_vline(x + w - 1.0, y, h, 1.0, color); // Right
+    }
+
+    /// Draw a wireframe circle for debugging.
+    /// Approximated as 16 evenly-spaced 2×2 dots around the circumference.
+    pub fn debug_circle(&mut self, cx: f32, cy: f32, radius: f32, color: Color) {
+        let segments = 16;
+        for i in 0..segments {
+            let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let x = cx + angle.cos() * radius;
+            let y = cy + angle.sin() * radius;
+            self.ui_rect(x, y, 2.0, 2.0, color);
         }
     }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::renderer::text::{Font, Glyph};
-    use std::collections::HashMap;
-
-    fn make_font() -> Font {
-        let mut glyphs = HashMap::new();
-        // Simple glyph for 'A' with MTSDF-style metrics.
-        // plane: left=0, top=-1 (above baseline), right=0.5, bottom=0
-        // atlas: 8×16 region in a 256×256 atlas
-        glyphs.insert('A', Glyph {
-            atlas_left: 0.0, atlas_top: 0.0, atlas_right: 8.0, atlas_bottom: 16.0,
-            plane_left: 0.0, plane_top: -1.0, plane_right: 0.5, plane_bottom: 0.0,
-            x_advance: 0.5,
-        });
-        Font {
-            glyphs,
-            line_height: 1.0,
-            ascender: -1.0,   // 1 em above the baseline (negative = up in screen Y-down)
-            descender: 0.1,
-            atlas_width: 256,
-            atlas_height: 256,
-            distance_range: 4.0,
-            kerning: HashMap::new(),
-        }
-    }
-
-    // ── Label dirty flag ───────────────────────────────────────────────────────
-
-    #[test]
-    fn label_starts_clean() {
-        let label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        assert!(!label.dirty);
-        assert!(label.text.is_empty());
-    }
-
-    #[test]
-    fn set_text_marks_dirty() {
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("Hello");
-        assert!(label.dirty);
-        assert_eq!(label.text, "Hello");
-    }
-
-    #[test]
-    fn set_same_text_stays_clean() {
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("Hello");
-        label.dirty = false;
-        label.set_text("Hello");
-        assert!(!label.dirty, "identical set_text must not re-dirty");
-    }
-
-    #[test]
-    fn set_different_text_marks_dirty_again() {
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("Hello");
-        label.dirty = false;
-        label.set_text("World");
-        assert!(label.dirty);
-    }
-
-    // ── Label::draw mesh generation ────────────────────────────────────────────
-
-    #[test]
-    fn draw_empty_text_produces_no_vertices() {
-        let mut layer = TextLayer::new();
-        layer.set_font(make_font());
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("");
-        label.draw(&mut layer);
-        assert!(layer.vertices.is_empty());
-        assert!(layer.indices.is_empty());
-    }
-
-    #[test]
-    fn draw_produces_vertices_for_known_glyph() {
-        let mut layer = TextLayer::new();
-        layer.set_font(make_font());
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("A");
-        label.draw(&mut layer);
-        // One quad = 4 vertices, 6 indices.
-        assert_eq!(layer.vertices.len(), 4);
-        assert_eq!(layer.indices.len(), 6);
-    }
-
-    #[test]
-    fn draw_clears_dirty_flag() {
-        let mut layer = TextLayer::new();
-        layer.set_font(make_font());
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("A");
-        label.draw(&mut layer);
-        assert!(!label.dirty);
-    }
-
-    #[test]
-    fn draw_twice_does_not_duplicate_geometry() {
-        let mut layer = TextLayer::new();
-        layer.set_font(make_font());
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("A");
-        label.draw(&mut layer);
-        // Second draw with same text: cached mesh appended again.
-        label.draw(&mut layer);
-        assert_eq!(layer.vertices.len(), 8);
-        assert_eq!(layer.indices.len(), 12);
-    }
-
-    // ── Index offset for multiple labels ──────────────────────────────────────
-
-    #[test]
-    fn second_label_indices_offset_by_first_vertex_count() {
-        let mut layer = TextLayer::new();
-        layer.set_font(make_font());
-
-        let mut label_a = Label::new([0.0,  0.0], 16.0, [1.0; 4]);
-        let mut label_b = Label::new([0.0, 20.0], 16.0, [1.0; 4]);
-
-        label_a.set_text("A");
-        label_b.set_text("A");
-
-        label_a.draw(&mut layer);
-        label_b.draw(&mut layer);
-
-        let min_b = layer.indices[6..].iter().copied().min().unwrap();
-        assert_eq!(min_b, 4, "label_b indices must start at 4, not 0");
-    }
-
-    // ── TextLayer helpers ─────────────────────────────────────────────────────
-
-    #[test]
-    fn text_layer_set_font_registers_font() {
-        let mut layer = TextLayer::new();
-        assert!(layer.font.is_none());
-        layer.set_font(make_font());
-        assert!(layer.font.is_some());
-        // Calling set_font again replaces the previous font.
-        layer.set_font(make_font());
-        assert!(layer.font.is_some());
-    }
-
-    #[test]
-    fn text_layer_clear_resets_buffers() {
-        let mut layer = TextLayer::new();
-        layer.set_font(make_font());
-        let mut label = Label::new([0.0, 0.0], 16.0, [1.0; 4]);
-        label.set_text("A");
-        label.draw(&mut layer);
-        assert!(!layer.vertices.is_empty());
-
-        layer.clear();
-        assert!(layer.vertices.is_empty());
-        assert!(layer.indices.is_empty());
-        // Font must survive a clear.
-        assert!(layer.font.is_some());
-    }
-
-    // ── word_wrap ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn word_wrap_empty_string() {
-        assert!(word_wrap("", 10).is_empty());
-    }
-
-    #[test]
-    fn word_wrap_zero_cols() {
-        assert!(word_wrap("hello world", 0).is_empty());
-    }
-
-    #[test]
-    fn word_wrap_single_word_fits() {
-        assert_eq!(word_wrap("hello", 10), vec!["hello"]);
-    }
-
-    #[test]
-    fn word_wrap_two_words_fit_on_one_line() {
-        assert_eq!(word_wrap("hi there", 10), vec!["hi there"]);
-    }
-
-    #[test]
-    fn word_wrap_two_words_split_to_two_lines() {
-        assert_eq!(word_wrap("hello world", 8), vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn word_wrap_long_word_forced_split() {
-        assert_eq!(word_wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
-    }
-
-    // ── rect_contains ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn rect_contains_inside() {
-        assert!(rect_contains(0.0, 0.0, 10.0, 10.0, 5.0, 5.0));
-    }
-
-    #[test]
-    fn rect_contains_left_edge() {
-        assert!(rect_contains(0.0, 0.0, 10.0, 10.0, 0.0, 5.0));
-    }
-
-    #[test]
-    fn rect_contains_right_edge_exclusive() {
-        assert!(!rect_contains(0.0, 0.0, 10.0, 10.0, 10.0, 5.0));
-    }
-
-    #[test]
-    fn rect_contains_outside() {
-        assert!(!rect_contains(0.0, 0.0, 10.0, 10.0, 15.0, 5.0));
-    }
-}

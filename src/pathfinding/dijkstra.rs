@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 // =============================================================================
 // DIJKSTRA MAPS
 // =============================================================================
@@ -32,60 +34,41 @@ impl DijkstraMap {
         goals: &[(i32, i32)],
         is_passable: impl Fn(i32, i32) -> bool,
     ) -> Self {
+        if width <= 0 || height <= 0 {
+            return Self { width, height, values: Vec::new() };
+        }
+
         let size = (width * height) as usize;
         let mut values = vec![f32::MAX; size];
 
-        // Set goals to 0
+        // BFS from all goal cells simultaneously — O(cells) instead of O(cells²).
+        let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
         for &(gx, gy) in goals {
             if gx >= 0 && gy >= 0 && gx < width && gy < height {
-                values[(gy * width + gx) as usize] = 0.0;
-            }
-        }
-
-        // Flood fill using a simple iterative approach
-        let mut changed = true;
-        while changed {
-            changed = false;
-
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize;
-                    let current = values[idx];
-
-                    if current == f32::MAX {
-                        continue;
-                    }
-
-                    // Check neighbors
-                    for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
-                        let nx = x + dx;
-                        let ny = y + dy;
-
-                        if nx < 0 || ny < 0 || nx >= width || ny >= height {
-                            continue;
-                        }
-
-                        if !is_passable(nx, ny) {
-                            continue;
-                        }
-
-                        let nidx = (ny * width + nx) as usize;
-                        let new_value = current + 1.0;
-
-                        if new_value < values[nidx] {
-                            values[nidx] = new_value;
-                            changed = true;
-                        }
-                    }
+                let idx = (gy * width + gx) as usize;
+                if values[idx] == f32::MAX {
+                    values[idx] = 0.0;
+                    queue.push_back((gx, gy));
                 }
             }
         }
 
-        Self {
-            width,
-            height,
-            values,
+        while let Some((x, y)) = queue.pop_front() {
+            let current = values[(y * width + x) as usize];
+            for (dx, dy) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
+                let nx = x + dx;
+                let ny = y + dy;
+                if nx < 0 || ny < 0 || nx >= width || ny >= height { continue; }
+                if !is_passable(nx, ny) { continue; }
+                let nidx = (ny * width + nx) as usize;
+                if values[nidx] == f32::MAX {
+                    values[nidx] = current + 1.0;
+                    queue.push_back((nx, ny));
+                }
+            }
         }
+
+        Self { width, height, values }
     }
 
     /// Get the value at (x, y). Returns f32::MAX for out of bounds.

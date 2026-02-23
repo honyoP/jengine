@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,12 +9,20 @@ pub use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
+/// Maximum number of simultaneously animated entities.
+/// Entity IDs at or above this limit will not receive animation offsets.
+/// Matches the GPU storage buffer size allocated in the renderer.
+pub const MAX_ANIMATED_ENTITIES: usize = 10_000;
+
 use crate::camera::Camera;
-use crate::ui::UI;
+use crate::ui::{UI, Padding, BorderStyle};
 use crate::ecs::Entity;
+use crate::input::InputState;
+use crate::audio::AudioContext;
 use crate::renderer::Renderer;
 use crate::renderer::particle_pipeline::ParticleVertex;
 use crate::renderer::pipeline::TileVertex;
+use crate::renderer::sprite_atlas::SpriteData;
 
 // ── Color ──────────────────────────────────────────────────────────────────
 
@@ -42,8 +50,11 @@ impl Color {
 // ── Game trait ──────────────────────────────────────────────────────────────
 
 pub trait Game {
+    fn on_enter(&mut self, _engine: &mut jEngine) {}
     fn update(&mut self, engine: &mut jEngine);
     fn render(&mut self, engine: &mut jEngine);
+    /// Optional: Provide extra debug info (colliders, ECS stats) for the F1 inspector.
+    fn debug_render(&mut self, _engine: &mut jEngine) -> Option<Box<dyn crate::ui::widgets::Widget>> { None }
 }
 
 // ── Animation system ────────────────────────────────────────────────────────
@@ -144,7 +155,7 @@ impl Default for FgCell {
 struct SpriteCommand {
     x: u32,
     y: u32,
-    sprite_name: String,
+    data: SpriteData,
     /// 0 = drawn below layer-1 sprites; 1 = drawn above layer-0 sprites.
     layer: u8,
     tint: Color,
@@ -153,6 +164,30 @@ struct SpriteCommand {
 }
 
 // ── Engine ──────────────────────────────────────────────────────────────────
+
+/// Persistent state for the F1 debug inspector.
+#[derive(Debug)]
+pub struct DebugState {
+    pub enabled: bool,
+    pub active: bool,
+    pub pos: [f32; 2],
+    pub is_dragging: bool,
+    pub drag_offset: [f32; 2],
+    pub scroll: f32,
+}
+
+impl DebugState {
+    pub fn new(enabled: bool, sw: f32, sh: f32) -> Self {
+        Self {
+            enabled,
+            active: false,
+            pos: [sw * 0.5 - 125.0, sh * 0.5 - 50.0],
+            is_dragging: false,
+            drag_offset: [0.0, 0.0],
+            scroll: 0.0,
+        }
+    }
+}
 
 // Why non_camel_case? Just to style on the plebeians
 #[allow(non_camel_case_types)]
@@ -168,23 +203,31 @@ pub struct jEngine {
     bg_grid: Vec<BgCell>,
     /// Layer 1: character glyphs with optional animation (char atlas path).
     fg_grid: Vec<FgCell>,
+    /// True if the grid meshes need to be rebuilt.
+    grid_dirty: bool,
+    /// Cached vertices for the background and foreground layers.
+    cached_char_verts: Vec<TileVertex>,
     /// Queued sprite draw calls (sprite atlas path); cleared before each render.
     sprite_commands: Vec<SpriteCommand>,
     particle_vertices: Vec<ParticleVertex>,
     active_animations: Vec<ActiveAnimation>,
+    /// Visual offsets for each entity, uploaded to the GPU as a storage buffer.
+    /// We use [f32; 4] to ensure 16-byte alignment required by many GPUs for storage arrays.
+    entity_offsets: Vec<[f32; 4]>,
     /// 2D camera — tracks position, zoom, and shake.
     pub(crate) camera: Camera,
     dt: f32,
     tick: u64,
-    keys_held: HashSet<KeyCode>,
-    keys_pressed: HashSet<KeyCode>,
-    keys_released: HashSet<KeyCode>,
-    /// Printable characters typed this frame (populated from `KeyEvent.text`).
-    /// Cleared at the start of each frame alongside `keys_pressed`.
-    /// Widgets drain this during `draw()` to implement text input.
-    pub chars_typed: Vec<char>,
+    /// Unified input state (keyboard, mouse, chars).
+    pub input: InputState,
     /// Set to `true` by `request_quit()`; the event loop exits after the current tick.
     pub(crate) quit_requested: bool,
+    /// Persistent debug inspector state.
+    pub debug: DebugState,
+    /// Audio subsystem for music and sound effects.
+    pub audio: AudioContext,
+    /// Rolling buffer of recent frame times for FPS calculation.
+    pub(crate) frame_times: VecDeque<f32>,
 }
 
 impl jEngine {
@@ -192,7 +235,7 @@ impl jEngine {
         EngineBuilder::default()
     }
 
-    fn from_builder(renderer: Renderer, tile_w: u32, tile_h: u32) -> Self {
+    fn from_builder(renderer: Renderer, tile_w: u32, tile_h: u32, debug_enabled: bool) -> Self {
         let size = renderer.window.inner_size();
         let grid_w = size.width / tile_w;
         let grid_h = size.height / tile_h;
@@ -213,17 +256,20 @@ impl jEngine {
             grid_h,
             bg_grid: vec![BgCell::default(); grid_size],
             fg_grid: vec![FgCell::default(); grid_size],
+            grid_dirty: true,
+            cached_char_verts: Vec::new(),
             sprite_commands: Vec::new(),
             particle_vertices: Vec::new(),
             active_animations: Vec::new(),
+            entity_offsets: vec![[0.0, 0.0, 0.0, 0.0]; MAX_ANIMATED_ENTITIES],
             camera,
             dt: 0.0,
             tick: 0,
-            keys_held: HashSet::new(),
-            keys_pressed: HashSet::new(),
-            keys_released: HashSet::new(),
-            chars_typed: Vec::new(),
+            input: InputState::new(),
             quit_requested: false,
+            debug: DebugState::new(debug_enabled, size.width as f32, size.height as f32),
+            audio: AudioContext::new(),
+            frame_times: VecDeque::with_capacity(60),
         }
     }
 
@@ -236,9 +282,13 @@ impl jEngine {
     pub fn tile_width(&self) -> u32 { self.ui.tile_w }
     pub fn tile_height(&self) -> u32 { self.ui.tile_h }
 
-    pub fn is_key_held(&self, key: KeyCode) -> bool { self.keys_held.contains(&key) }
-    pub fn is_key_pressed(&self, key: KeyCode) -> bool { self.keys_pressed.contains(&key) }
-    pub fn is_key_released(&self, key: KeyCode) -> bool { self.keys_released.contains(&key) }
+    pub fn is_key_held(&self, key: KeyCode) -> bool { self.input.is_key_held(key) }
+    pub fn is_key_pressed(&self, key: KeyCode) -> bool { self.input.is_key_pressed(key) }
+    pub fn is_key_released(&self, key: KeyCode) -> bool { self.input.is_key_released(key) }
+
+    pub fn is_mouse_held(&self, button: MouseButton) -> bool { self.input.is_mouse_held(button) }
+    pub fn is_mouse_pressed(&self, button: MouseButton) -> bool { self.input.is_mouse_pressed(button) }
+    pub fn mouse_pos(&self) -> [f32; 2] { self.input.mouse_pos }
 
     // ── Camera API ─────────────────────────────────────────────────────────
 
@@ -269,10 +319,74 @@ impl jEngine {
         self.camera.shake(intensity);
     }
 
+    /// Convert screen-pixel coordinates to world-space pixel coordinates,
+    /// accounting for camera position and zoom.
+    ///
+    /// **Note:** camera rotation is not accounted for. If `camera.rotation != 0.0`
+    /// the returned coordinates will be incorrect.
+    pub fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> [f32; 2] {
+        let size = self.renderer.window.inner_size();
+        let sw = size.width as f32;
+        let sh = size.height as f32;
+        
+        // 1. Convert screen to NDC [-1, +1]
+        let ndc_x = (screen_x / sw) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen_y / sh) * 2.0;
+        
+        // 2. Invert camera transform
+        let z = self.camera.zoom.max(0.01);
+        let world_x = (ndc_x * sw / (2.0 * z)) + self.camera.position.x + self.camera.shake_offset.x;
+        let world_y = (-ndc_y * sh / (2.0 * z)) + self.camera.position.y + self.camera.shake_offset.y;
+        
+        [world_x, world_y]
+    }
+
+    /// Convert world-space pixel coordinates to screen-pixel coordinates.
+    ///
+    /// **Note:** camera rotation is not accounted for. If `camera.rotation != 0.0`
+    /// the returned coordinates will be incorrect.
+    pub fn world_to_screen(&self, world_x: f32, world_y: f32) -> [f32; 2] {
+        let size = self.renderer.window.inner_size();
+        let sw = size.width as f32;
+        let sh = size.height as f32;
+        
+        let cx = self.camera.position.x + self.camera.shake_offset.x;
+        let cy = self.camera.position.y + self.camera.shake_offset.y;
+        let z = self.camera.zoom.max(0.01);
+
+        let ndc_x = (world_x - cx) * (2.0 * z / sw);
+        let ndc_y = (world_y - cy) * (-2.0 * z / sh);
+        
+        let screen_x = (ndc_x + 1.0) * 0.5 * sw;
+        let screen_y = (1.0 - ndc_y) * 0.5 * sh;
+        
+        [screen_x, screen_y]
+    }
+
     /// Signal that the application should exit.  The event loop will call
     /// `exit()` after the current update tick completes.
     pub fn request_quit(&mut self) {
         self.quit_requested = true;
+    }
+
+    // ── Audio API ──────────────────────────────────────────────────────────
+
+    pub fn play_sound(&mut self, name: &str) {
+        self.audio.play(name, crate::audio::SoundConfig::default());
+    }
+
+    pub fn play_sound_varied(&mut self, name: &str, volume: f32, pitch_variation: f32) {
+        self.audio.play(name, crate::audio::SoundConfig {
+            volume,
+            pitch: 1.0,
+            pitch_variation,
+            volume_variation: 0.05,
+        });
+    }
+
+    pub fn play_spatial(&mut self, name: &str, x: f32, y: f32, max_dist: f32) {
+        let listener = self.camera.position;
+        self.audio.play_spatial(name, x, y, listener.x, listener.y, max_dist);
     }
 
     // ── Grid drawing (character / char-atlas path) ─────────────────────────
@@ -281,12 +395,14 @@ impl jEngine {
     pub fn clear(&mut self) {
         self.bg_grid.fill(BgCell::default());
         self.fg_grid.fill(FgCell::default());
+        self.grid_dirty = true;
     }
 
     /// Set the background (Layer 0) at `(x, y)` to a solid color.
     pub fn set_background(&mut self, x: u32, y: u32, color: Color) {
         if x < self.grid_w && y < self.grid_h {
             self.bg_grid[(y * self.grid_w + x) as usize].color = color;
+            self.grid_dirty = true;
         }
     }
 
@@ -298,6 +414,7 @@ impl jEngine {
                 fg,
                 entity_id: NO_ENTITY,
             };
+            self.grid_dirty = true;
         }
     }
 
@@ -310,6 +427,7 @@ impl jEngine {
                 fg,
                 entity_id: entity.id(),
             };
+            self.grid_dirty = true;
         }
     }
 
@@ -320,26 +438,30 @@ impl jEngine {
     /// `layer`: `0` = drawn before layer-1 sprites (background objects),
     ///          `1` = drawn after layer-0 sprites (foreground entities).
     pub fn draw_sprite(&mut self, x: u32, y: u32, name: &str, layer: u8, tint: Color) {
-        self.sprite_commands.push(SpriteCommand {
-            x,
-            y,
-            sprite_name: name.to_string(),
-            layer,
-            tint,
-            entity_id: NO_ENTITY,
-        });
+        if let Some(data) = self.renderer.get_sprite_data(name) {
+            self.sprite_commands.push(SpriteCommand {
+                x,
+                y,
+                data,
+                layer,
+                tint,
+                entity_id: NO_ENTITY,
+            });
+        }
     }
 
     /// Queue a sprite linked to an ECS entity (always Layer 1).
     pub fn draw_sprite_entity(&mut self, x: u32, y: u32, name: &str, entity: Entity, tint: Color) {
-        self.sprite_commands.push(SpriteCommand {
-            x,
-            y,
-            sprite_name: name.to_string(),
-            layer: 1,
-            tint,
-            entity_id: entity.id(),
-        });
+        if let Some(data) = self.renderer.get_sprite_data(name) {
+            self.sprite_commands.push(SpriteCommand {
+                x,
+                y,
+                data,
+                layer: 1,
+                tint,
+                entity_id: entity.id(),
+            });
+        }
     }
 
     // ── Particle drawing ───────────────────────────────────────────────────
@@ -360,6 +482,14 @@ impl jEngine {
     /// Start (or restart) an animation on an ECS entity.  Fire-and-forget:
     /// the engine removes it automatically once its duration elapses.
     pub fn play_animation(&mut self, entity: Entity, anim_type: AnimationType) {
+        if (entity.id() as usize) >= MAX_ANIMATED_ENTITIES {
+            eprintln!(
+                "[engine] play_animation: entity id {} >= MAX_ANIMATED_ENTITIES ({}). \
+                 Animation will not play. Increase MAX_ANIMATED_ENTITIES if needed.",
+                entity.id(), MAX_ANIMATED_ENTITIES
+            );
+            return;
+        }
         let duration = anim_type.duration();
         self.active_animations.retain(|a| a.entity_id != entity.id());
         self.active_animations.push(ActiveAnimation {
@@ -372,10 +502,26 @@ impl jEngine {
 
     /// Advance all active animations and camera state by `dt` seconds.
     pub(crate) fn tick_animations(&mut self, dt: f32) {
+        // Reset offsets for entities that were animating but finished
+        for a in &self.active_animations {
+            if (a.entity_id as usize) < self.entity_offsets.len() {
+                self.entity_offsets[a.entity_id as usize] = [0.0, 0.0, 0.0, 0.0];
+            }
+        }
+
         for a in &mut self.active_animations {
             a.elapsed += dt;
         }
         self.active_animations.retain(|a| a.elapsed < a.duration);
+        
+        // Update current offsets
+        for a in &self.active_animations {
+            if (a.entity_id as usize) < self.entity_offsets.len() {
+                let off = compute_offset(&a.anim_type, a.elapsed, a.duration);
+                self.entity_offsets[a.entity_id as usize] = [off[0], off[1], 0.0, 0.0];
+            }
+        }
+
         self.camera.tick(dt);
     }
 
@@ -392,97 +538,166 @@ impl jEngine {
         self.renderer.update_camera(&uniform);
     }
 
-    /// Build vertex data for the current frame.
-    fn build_vertices(&self) -> (Vec<TileVertex>, Vec<TileVertex>) {
-        let offsets: HashMap<u32, [f32; 2]> = self
-            .active_animations
-            .iter()
-            .map(|a| (a.entity_id, compute_offset(&a.anim_type, a.elapsed, a.duration)))
-            .collect();
+    /// Render the toggleable F1 debug inspector.
+    pub(crate) fn draw_debug_inspector(&mut self, extra_content: Option<Box<dyn crate::ui::widgets::Widget>>) {
+        use crate::ui::widgets::{VStack, TextWidget, Widget, Spacer, ScrollContainer};
+        use crate::ui::Alignment;
 
+        let debug_fs = 12.0;
+
+        // ── 1. Calculate Stats ──
+        let avg_ft: f32 = if self.frame_times.is_empty() {
+            0.0
+        } else {
+            self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32
+        };
+        let fps = if avg_ft > 0.0 { 1.0 / avg_ft } else { 0.0 };
+        let stats_text = format!("FPS: {:.1} | FT: {:.2}ms", fps, avg_ft * 1000.0);
+
+        // ── 2. Persistent Drag Logic ──
+        let panel_w = 250.0;
+        let header_h = 25.0;
+        let [mx, my] = self.input.mouse_pos;
+        let [px, py] = self.debug.pos;
+
+        let is_over_header = mx >= px && mx <= px + panel_w && my >= py && my <= py + header_h;
+
+        if self.input.is_mouse_pressed(MouseButton::Left) && is_over_header && !self.input.mouse_consumed {
+            self.debug.is_dragging = true;
+            self.debug.drag_offset = [mx - px, my - py];
+            self.input.mouse_consumed = true;
+        }
+
+        if self.debug.is_dragging {
+            if !self.input.is_mouse_held(MouseButton::Left) {
+                self.debug.is_dragging = false;
+            } else {
+                self.debug.pos = [mx - self.debug.drag_offset[0], my - self.debug.drag_offset[1]];
+            }
+        }
+
+        // ── 3. Render the Panel ──
+        let [nx, ny] = self.debug.pos;
+        
+        // Use a local copy to avoid double-borrowing self while building/drawing the UI
+        let mut scroll = self.debug.scroll;
+
+        {
+            let mut main_stack = VStack::new(Alignment::Start)
+                .with_spacing(5.0)
+                .with_padding(Padding { top: header_h, left: 10.0, right: 10.0, bottom: 10.0 })
+                .with_min_width(panel_w)
+                .with_bg(Color([1.0, 1.0, 1.0, 0.8]))
+                .with_border(BorderStyle::Thin, Color::BLACK)
+                .add(TextWidget {
+                    text: "DEBUG INSPECTOR [F1]".to_string(),
+                    size: Some(debug_fs),
+                    color: Color::DARK_BLUE,
+                })
+                .add(TextWidget {
+                    text: stats_text,
+                    size: Some(debug_fs),
+                    color: Color::BLACK,
+                });
+
+            if let Some(extra) = extra_content {
+                main_stack = main_stack.add(Spacer { size: 10.0, horizontal: false });
+                main_stack = main_stack.add(ScrollContainer {
+                    inner: extra,
+                    max_height: 400.0,
+                    scroll_offset: &mut scroll,
+                });
+            }
+
+            main_stack.draw(self, nx, ny, panel_w, None);
+        }
+        
+        self.debug.scroll = scroll;
+        
+        // Draw header highlight
+        self.ui.ui_rect(nx + 1.0, ny + 1.0, panel_w - 2.0, header_h - 1.0, Color([0.1, 0.2, 0.3, 0.3]));
+    }
+
+    /// Build vertex data for the current frame.
+    fn build_vertices(&mut self) -> (Vec<TileVertex>, Vec<TileVertex>) {
         let tile_w = self.ui.tile_w;
         let tile_h = self.ui.tile_h;
-        let cells = (self.grid_w * self.grid_h) as usize;
-        let mut char_verts = Vec::with_capacity(cells * 12);
 
-        // ── bg_grid → Layer 0 solid fills (layer_id = 0.0) ───────────────
-        for y in 0..self.grid_h {
-            for x in 0..self.grid_w {
-                let cell = &self.bg_grid[(y * self.grid_w + x) as usize];
-                let px = (x * tile_w) as f32;
-                let py = (y * tile_h) as f32;
-                let pw = tile_w as f32;
-                let ph = tile_h as f32;
-                let dummy_uv = [0.0f32, 0.0];
+        // ── 1. Grid Reconstruction (only if dirty) ──
+        if self.grid_dirty {
+            let cells = (self.grid_w * self.grid_h) as usize;
+            let mut char_verts = Vec::with_capacity(cells * 12);
 
-                let tl = TileVertex { position: [px,      py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, v_offset: [0.0, 0.0], layer_id: 0.0 };
-                let tr = TileVertex { position: [px + pw, py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, v_offset: [0.0, 0.0], layer_id: 0.0 };
-                let bl = TileVertex { position: [px,      py + ph], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, v_offset: [0.0, 0.0], layer_id: 0.0 };
-                let br = TileVertex { position: [px + pw, py + ph], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, v_offset: [0.0, 0.0], layer_id: 0.0 };
-                char_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
+            // Layer 0: background
+            for y in 0..self.grid_h {
+                for x in 0..self.grid_w {
+                    let cell = &self.bg_grid[(y * self.grid_w + x) as usize];
+                    let px = (x * tile_w) as f32;
+                    let py = (y * tile_h) as f32;
+                    let pw = tile_w as f32;
+                    let ph = tile_h as f32;
+                    let dummy_uv = [0.0f32, 0.0];
+
+                    let tl = TileVertex { position: [px,      py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let tr = TileVertex { position: [px + pw, py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let bl = TileVertex { position: [px,      py + ph], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let br = TileVertex { position: [px + pw, py + ph], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    char_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
+                }
             }
+
+            // Layer 1: glyphs
+            for y in 0..self.grid_h {
+                for x in 0..self.grid_w {
+                    let cell = &self.fg_grid[(y * self.grid_w + x) as usize];
+                    if cell.index == NO_GLYPH { continue; }
+
+                    let px = (x * tile_w) as f32;
+                    let py = (y * tile_h) as f32;
+                    let pw = tile_w as f32;
+                    let ph = tile_h as f32;
+
+                    let (uv_min, uv_max) = self.renderer.atlas.uv_for_index(cell.index);
+                    
+                    let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let tr = TileVertex { position: [px + pw, py     ], uv: [uv_max[0], uv_min[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let bl = TileVertex { position: [px,      py + ph], uv: [uv_min[0], uv_max[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let br = TileVertex { position: [px + pw, py + ph], uv: uv_max,                  fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    char_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
+                }
+            }
+            self.cached_char_verts = char_verts;
+            self.grid_dirty = false; // Grid is now static!
         }
 
-        // ── fg_grid → char glyphs (layer_id = 1.0, animated) ─────────────
-        for y in 0..self.grid_h {
-            for x in 0..self.grid_w {
-                let cell = &self.fg_grid[(y * self.grid_w + x) as usize];
-                if cell.index == NO_GLYPH { continue; }
-
-                let px = (x * tile_w) as f32;
-                let py = (y * tile_h) as f32;
-                let pw = tile_w as f32;
-                let ph = tile_h as f32;
-
-                let (uv_min, uv_max) = self.renderer.atlas.uv_for_index(cell.index);
-                let v_offset = offsets.get(&cell.entity_id).copied().unwrap_or([0.0, 0.0]);
-
-                let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: cell.fg.0, bg_color: [0.0; 4], v_offset, layer_id: 1.0 };
-                let tr = TileVertex { position: [px + pw, py     ], uv: [uv_max[0], uv_min[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], v_offset, layer_id: 1.0 };
-                let bl = TileVertex { position: [px,      py + ph], uv: [uv_min[0], uv_max[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], v_offset, layer_id: 1.0 };
-                let br = TileVertex { position: [px + pw, py + ph], uv: uv_max,                  fg_color: cell.fg.0, bg_color: [0.0; 4], v_offset, layer_id: 1.0 };
-                char_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
-            }
-        }
-
-        // ── sprite_commands → sprite atlas quads ──────────────────────────
-        let Some(sprite_atlas) = self.renderer.sprite_atlas.as_ref() else {
-            return (char_verts, Vec::new());
-        };
-
+        // ── 2. Sprite Rendering (Using raw data from SpriteCommand) ──
         let mut sorted: Vec<&SpriteCommand> = self.sprite_commands.iter().collect();
         sorted.sort_by_key(|c| c.layer);
 
         let mut sprite_verts = Vec::with_capacity(sorted.len() * 6);
 
         for cmd in sorted {
-            let Some(sprite) = sprite_atlas.sprites.get(&cmd.sprite_name) else {
-                continue;
-            };
-
             let px = (cmd.x * tile_w) as f32;
             let py = (cmd.y * tile_h) as f32;
-            let pw = (sprite.tile_w_span * tile_w) as f32;
-            let ph = (sprite.tile_h_span * tile_h) as f32;
+            let pw = (cmd.data.tile_w_span * tile_w) as f32;
+            let ph = (cmd.data.tile_h_span * tile_h) as f32;
 
-            let (v_offset, layer_id) = if cmd.entity_id != NO_ENTITY {
-                (offsets.get(&cmd.entity_id).copied().unwrap_or([0.0, 0.0]), 1.0f32)
-            } else {
-                ([0.0f32, 0.0], 0.5f32)
-            };
+            let layer_id = if cmd.entity_id != NO_ENTITY { 1.0f32 } else { 0.5f32 };
 
-            let uv_min = sprite.uv_min;
-            let uv_max = sprite.uv_max;
+            let uv_min = cmd.data.uv_min;
+            let uv_max = cmd.data.uv_max;
             let fg = cmd.tint.0;
 
-            let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: fg, bg_color: [0.0; 4], v_offset, layer_id };
-            let tr = TileVertex { position: [px + pw, py     ], uv: [uv_max[0], uv_min[1]], fg_color: fg, bg_color: [0.0; 4], v_offset, layer_id };
-            let bl = TileVertex { position: [px,      py + ph], uv: [uv_min[0], uv_max[1]], fg_color: fg, bg_color: [0.0; 4], v_offset, layer_id };
-            let br = TileVertex { position: [px + pw, py + ph], uv: uv_max,                  fg_color: fg, bg_color: [0.0; 4], v_offset, layer_id };
+            let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let tr = TileVertex { position: [px + pw, py     ], uv: [uv_max[0], uv_min[1]], fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let bl = TileVertex { position: [px,      py + ph], uv: [uv_min[0], uv_max[1]], fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let br = TileVertex { position: [px + pw, py + ph], uv: uv_max,                  fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
             sprite_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
         }
 
-        (char_verts, sprite_verts)
+        self.renderer.update_entity_offsets(&self.entity_offsets);
+
+        (self.cached_char_verts.clone(), sprite_verts)
     }
 
     fn handle_resize(&mut self) {
@@ -495,6 +710,63 @@ impl jEngine {
             let grid_size = (new_gw * new_gh) as usize;
             self.bg_grid = vec![BgCell::default(); grid_size];
             self.fg_grid = vec![FgCell::default(); grid_size];
+            self.grid_dirty = true;
+        }
+    }
+
+    // ── Post-processing API ───────────────────────────────────────────────
+
+    pub fn set_scanlines(&mut self, enabled: bool) {
+        if enabled {
+            let scale = self.renderer.window.scale_factor() as f32;
+            self.renderer.post_process.add_effect(Box::new(
+                crate::renderer::post_process::ScanlineEffect::new(
+                    &self.renderer.device,
+                    self.renderer.surface_format(),
+                    scale,
+                )
+            ));
+        } else {
+            self.renderer.post_process.remove_effect("scanline");
+        }
+    }
+
+    pub fn set_vignette(&mut self, enabled: bool) {
+        if enabled {
+            self.renderer.post_process.add_effect(Box::new(
+                crate::renderer::post_process::VignetteEffect::new(
+                    &self.renderer.device,
+                    self.renderer.surface_format(),
+                )
+            ));
+        } else {
+            self.renderer.post_process.remove_effect("vignette");
+        }
+    }
+
+    pub fn set_chromatic_aberration(&mut self, enabled: bool) {
+        if enabled {
+            self.renderer.post_process.add_effect(Box::new(
+                crate::renderer::post_process::ChromaticAberrationEffect::new(
+                    &self.renderer.device,
+                    self.renderer.surface_format(),
+                )
+            ));
+        } else {
+            self.renderer.post_process.remove_effect("chromatic_aberration");
+        }
+    }
+
+    pub fn set_bloom(&mut self, enabled: bool) {
+        if enabled {
+            self.renderer.post_process.add_effect(Box::new(
+                crate::renderer::post_process::BloomEffect::new(
+                    &self.renderer.device,
+                    self.renderer.surface_format(),
+                )
+            ));
+        } else {
+            self.renderer.post_process.remove_effect("bloom");
         }
     }
 }
@@ -511,6 +783,7 @@ pub struct EngineBuilder {
     target_ups: u32,
     sprite_folder: Option<String>,
     use_scanlines: bool,
+    debug_enabled: bool,
 }
 
 impl Default for EngineBuilder {
@@ -525,6 +798,7 @@ impl Default for EngineBuilder {
             target_ups: 60,
             sprite_folder: None,
             use_scanlines: false,
+            debug_enabled: false,
         }
     }
 }
@@ -549,7 +823,12 @@ impl EngineBuilder {
         self.use_scanlines = true; self
     }
 
-    pub fn run(self, game: impl Game + 'static) {
+    pub fn run(mut self, game: impl Game + 'static) {
+        // Check for --debug flag in command line arguments
+        if std::env::args().any(|arg| arg == "--debug") {
+            self.debug_enabled = true;
+        }
+
         let event_loop = EventLoop::new().unwrap();
         let fixed_dt = 1.0 / self.target_ups as f32;
         let mut app = App {
@@ -602,11 +881,15 @@ impl ApplicationHandler for App {
             renderer.load_sprite_folder(folder, self.config.tile_w, self.config.tile_h);
         }
 
-        self.engine = Some(jEngine::from_builder(
+        let mut engine = jEngine::from_builder(
             renderer,
             self.config.tile_w,
             self.config.tile_h,
-        ));
+            self.config.debug_enabled,
+        );
+
+        self.game.on_enter(&mut engine);
+        self.engine = Some(engine);
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
@@ -627,18 +910,28 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                engine.ui.mouse_pos = [position.x as f32, position.y as f32];
+                engine.input.mouse_pos = [position.x as f32, position.y as f32];
             }
 
-            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
+            WindowEvent::MouseInput { button, state, .. } => {
                 match state {
                     ElementState::Pressed => {
-                        engine.ui.mouse_clicked = true;
-                        engine.ui.mouse_held = true;
+                        if engine.input.mouse_held.insert(button) {
+                            engine.input.mouse_pressed.insert(button);
+                        }
                     }
                     ElementState::Released => {
-                        engine.ui.mouse_held = false;
+                        engine.input.mouse_held.remove(&button);
+                        engine.input.mouse_released.insert(button);
                     }
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                use winit::event::MouseScrollDelta;
+                match delta {
+                    MouseScrollDelta::LineDelta(_, y) => engine.input.mouse_wheel = y,
+                    MouseScrollDelta::PixelDelta(pos) => engine.input.mouse_wheel = (pos.y / 100.0) as f32,
                 }
             }
 
@@ -663,14 +956,25 @@ impl ApplicationHandler for App {
                 }
 
                 engine.tick_animations(elapsed);
-                engine.keys_pressed.clear();
-                engine.keys_released.clear();
-                engine.chars_typed.clear();
+                
+                // Track frame time for debug inspector
+                if engine.debug.enabled {
+                    if engine.frame_times.len() >= 60 {
+                        engine.frame_times.pop_front();
+                    }
+                    engine.frame_times.push_back(elapsed);
+                }
 
                 engine.sprite_commands.clear();
                 engine.particle_vertices.clear();
                 engine.ui.ui_vertices.clear();
                 self.game.render(engine);
+
+                // Draw debug inspector if active
+                if engine.debug.enabled && engine.debug.active {
+                    let debug_widget = self.game.debug_render(engine);
+                    engine.draw_debug_inspector(debug_widget);
+                }
 
                 let (char_verts, sprite_verts) = engine.build_vertices();
                 let particle_verts = std::mem::take(&mut engine.particle_vertices);
@@ -689,8 +993,9 @@ impl ApplicationHandler for App {
                     }
                     Err(e) => eprintln!("render error: {e}"),
                 }
-                engine.ui.mouse_clicked = false;
-                engine.ui.click_consumed = false;
+                
+                // End of frame cleanup
+                engine.input.clear_frame_state();
             }
 
             WindowEvent::KeyboardInput {
@@ -704,21 +1009,27 @@ impl ApplicationHandler for App {
                 ..
             } => match state {
                 ElementState::Pressed => {
-                    if engine.keys_held.insert(code) {
-                        engine.keys_pressed.insert(code);
+                    if engine.input.keys_held.insert(code) {
+                        engine.input.keys_pressed.insert(code);
                     }
+
+                    // F1 toggles debug inspector if enabled.
+                    if code == KeyCode::F1 && engine.debug.enabled {
+                        engine.debug.active = !engine.debug.active;
+                    }
+
                     // Capture printable characters for text-input widgets.
                     if let Some(t) = text {
                         for ch in t.chars() {
                             if !ch.is_control() {
-                                engine.chars_typed.push(ch);
+                                engine.input.chars_typed.push(ch);
                             }
                         }
                     }
                 }
                 ElementState::Released => {
-                    engine.keys_held.remove(&code);
-                    engine.keys_released.insert(code);
+                    engine.input.keys_held.remove(&code);
+                    engine.input.keys_released.insert(code);
                 }
             },
 

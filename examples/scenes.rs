@@ -105,7 +105,7 @@ impl Scene for TitleScene {
 
         let title = "JENGINE SCENE DEMO";
         engine.ui.ui_text(px + (pw - title.len() as f32 * tw) * 0.5, py + th, title, BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(px + tw, py + th * 2.0, pw - tw * 2.0, BORDER);
+        engine.ui.ui_hline(px + tw, py + th * 2.0, pw - tw * 2.0, 1.0, BORDER);
 
         engine.ui.ui_text(px + tw * 2.0, py + th * 3.5, "Scene stack:  1 scene  (TitleScene)", BODY, PANEL_BG, None);
         engine.ui.ui_text(px + tw * 2.0, py + th * 5.0, "[Enter]  Switch to GameScene", BODY, PANEL_BG, None);
@@ -272,7 +272,7 @@ impl Scene for PauseScene {
         engine.ui.ui_box(px, py, pw, ph, BorderStyle::Double, BORDER, PANEL_BG);
 
         engine.ui.ui_text(px + (pw - tw * 6.0) * 0.5, py + th, "PAUSED", BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(px + tw, py + th * 2.0, pw - tw * 2.0, BORDER);
+        engine.ui.ui_hline(px + tw, py + th * 2.0, pw - tw * 2.0, 1.0, BORDER);
         engine.ui.ui_text(px + tw * 2.0, py + th * 3.5, "[R / Esc]  Resume", BODY, PANEL_BG, None);
         engine.ui.ui_text(px + tw * 2.0, py + th * 5.0, "[Q]        Quit to Title", BODY, PANEL_BG, None);
         engine.ui.ui_text(px + tw * 2.0, py + th * 7.0, "Stack: 2 scenes (transparent)", DIM, PANEL_BG, None);
@@ -318,10 +318,10 @@ impl Scene for StatsScene {
         let ph = th * 16.0;
         let px = (sw - pw) * 0.5;
         let py = (sh - ph) * 0.5;
-        engine.ui.ui_box(px, py, pw, ph, BorderStyle::Single, BORDER, PANEL_BG);
+        engine.ui.ui_box(px, py, pw, ph, BorderStyle::Thin, BORDER, PANEL_BG);
 
         engine.ui.ui_text(px + (pw - tw * 11.0) * 0.5, py + th, "STATS SCREEN", BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(px + tw, py + th * 2.0, pw - tw * 2.0, BORDER);
+        engine.ui.ui_hline(px + tw, py + th * 2.0, pw - tw * 2.0, 1.0, BORDER);
 
         let rows = [
             ("Scene type",   "Opaque (is_transparent = false)"),
@@ -339,7 +339,7 @@ impl Scene for StatsScene {
         }
 
         let footer_y = py + ph - th;
-        engine.ui.ui_hline(px + tw, footer_y, pw - tw * 2.0, BORDER);
+        engine.ui.ui_hline(px + tw, footer_y, pw - tw * 2.0, 1.0, BORDER);
         engine.ui.ui_text(px + tw * 2.0, footer_y, "[Esc]  Back to game", DIM, PANEL_BG, None);
     }
 }
