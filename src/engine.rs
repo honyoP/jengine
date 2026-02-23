@@ -157,8 +157,10 @@ struct SpriteCommand {
 // Why non_camel_case? Just to style on the plebeians
 #[allow(non_camel_case_types)]
 pub struct jEngine {
-    /// UI subsystem — holds the renderer, tile dimensions, UI vertices, and
-    /// mouse state.  Game code draws UI via `engine.ui.ui_*()`.
+    /// GPU renderer — holds the WGPU surface, pipelines, and atlas textures.
+    pub renderer: Renderer,
+    /// UI subsystem — tile dimensions, UI vertices, mouse state, and text layer.
+    /// Game code draws UI via `engine.ui.ui_*()`.
     pub ui: UI,
     grid_w: u32,
     grid_h: u32,
@@ -203,8 +205,9 @@ impl jEngine {
             size.height as f32 / 2.0,
         );
 
-        let ui = UI::new(renderer, tile_w, tile_h);
+        let ui = UI::new(tile_w, tile_h);
         Self {
+            renderer,
             ui,
             grid_w,
             grid_h,
@@ -381,12 +384,12 @@ impl jEngine {
     /// Upload the current camera view-projection matrix to the GPU.
     /// Must be called once per frame before `renderer.render()`.
     pub(crate) fn sync_camera(&mut self) {
-        let size = self.ui.renderer.window.inner_size();
+        let size = self.renderer.window.inner_size();
         let uniform = self.camera.build_view_proj(
             size.width as f32,
             size.height as f32,
         );
-        self.ui.renderer.update_camera(&uniform);
+        self.renderer.update_camera(&uniform);
     }
 
     /// Build vertex data for the current frame.
@@ -431,7 +434,7 @@ impl jEngine {
                 let pw = tile_w as f32;
                 let ph = tile_h as f32;
 
-                let (uv_min, uv_max) = self.ui.renderer.atlas.uv_for_index(cell.index);
+                let (uv_min, uv_max) = self.renderer.atlas.uv_for_index(cell.index);
                 let v_offset = offsets.get(&cell.entity_id).copied().unwrap_or([0.0, 0.0]);
 
                 let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: cell.fg.0, bg_color: [0.0; 4], v_offset, layer_id: 1.0 };
@@ -443,7 +446,7 @@ impl jEngine {
         }
 
         // ── sprite_commands → sprite atlas quads ──────────────────────────
-        let Some(sprite_atlas) = self.ui.renderer.sprite_atlas.as_ref() else {
+        let Some(sprite_atlas) = self.renderer.sprite_atlas.as_ref() else {
             return (char_verts, Vec::new());
         };
 
@@ -483,7 +486,7 @@ impl jEngine {
     }
 
     fn handle_resize(&mut self) {
-        let size = self.ui.renderer.window.inner_size();
+        let size = self.renderer.window.inner_size();
         let new_gw = size.width / self.ui.tile_w;
         let new_gh = size.height / self.ui.tile_h;
         if new_gw != self.grid_w || new_gh != self.grid_h {
@@ -608,7 +611,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(engine) = self.engine.as_ref() {
-            engine.ui.renderer.window.request_redraw();
+            engine.renderer.window.request_redraw();
         }
     }
 
@@ -619,7 +622,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(size) => {
-                engine.ui.renderer.resize(size);
+                engine.renderer.resize(size);
                 engine.handle_resize();
             }
 
@@ -676,11 +679,13 @@ impl ApplicationHandler for App {
                 // Upload the current camera matrix to the GPU before rendering.
                 engine.sync_camera();
 
-                match engine.ui.renderer.render(&char_verts, &sprite_verts, &particle_verts, &ui_verts) {
+                let text_verts   = std::mem::take(&mut engine.ui.text.vertices);
+                let text_indices = std::mem::take(&mut engine.ui.text.indices);
+                match engine.renderer.render(&char_verts, &sprite_verts, &particle_verts, &ui_verts, &text_verts, &text_indices) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
-                        let size = engine.ui.renderer.window.inner_size();
-                        engine.ui.renderer.resize(size);
+                        let size = engine.renderer.window.inner_size();
+                        engine.renderer.resize(size);
                     }
                     Err(e) => eprintln!("render error: {e}"),
                 }

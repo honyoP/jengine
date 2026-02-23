@@ -96,11 +96,11 @@ impl Dropdown {
         // Label — truncated to leave room for the indicator ("  v") on the right.
         let max_label = ((w / tw) as usize).saturating_sub(4);
         let label: String = self.selected_text().chars().take(max_label).collect();
-        engine.ui.ui_text(x + tw, y, &label, TEXT, TRANSP);
+        engine.ui.ui_text(x + tw, y, &label, TEXT, TRANSP, None);
 
         // Indicator: "^" when open, "v" when closed.
         let arrow = if self.is_open { " ^" } else { " v" };
-        engine.ui.ui_text(x + w - tw * 2.0, y, arrow, DIM, TRANSP);
+        engine.ui.ui_text(x + w - tw * 2.0, y, arrow, DIM, TRANSP, None);
 
         if clicked {
             self.is_open = !self.is_open;
@@ -134,7 +134,7 @@ impl Dropdown {
                 let max_opt = ((w / tw) as usize).saturating_sub(3);
                 let text: String = option.chars().take(max_opt).collect();
                 let fg = if is_hov || is_sel { TEXT } else { DIM };
-                engine.ui.ui_text(x + tw, oy, &format!("{prefix}{text}"), fg, TRANSP);
+                engine.ui.ui_text(x + tw, oy, &format!("{prefix}{text}"), fg, TRANSP, None);
 
                 if row_clicked {
                     if i != self.selected {
@@ -271,7 +271,7 @@ impl InputBox {
         };
 
         let text_fg = if self.is_focused || hovered { TEXT } else { DIM };
-        engine.ui.ui_text(x + tw, y, &display, text_fg, TRANSP);
+        engine.ui.ui_text(x + tw, y, &display, text_fg, TRANSP, None);
 
         changed
     }
@@ -346,14 +346,14 @@ impl ToggleSelector {
             engine.ui.ui_rect(x + 1.0, y + 1.0, btn_w - 1.0, th - 2.0, BG_HOV);
         }
         let lfg = if !can_cycle { DIM } else if left_hov { TEXT } else { BORDER };
-        engine.ui.ui_text(x, y, "[<]", lfg, TRANSP);
+        engine.ui.ui_text(x, y, "[<]", lfg, TRANSP, None);
 
         // ── Right arrow button ────────────────────────────────────────────────
         if right_hov && can_cycle {
             engine.ui.ui_rect(x + w - btn_w, y + 1.0, btn_w - 1.0, th - 2.0, BG_HOV);
         }
         let rfg = if !can_cycle { DIM } else if right_hov { TEXT } else { BORDER };
-        engine.ui.ui_text(x + w - btn_w, y, "[>]", rfg, TRANSP);
+        engine.ui.ui_text(x + w - btn_w, y, "[>]", rfg, TRANSP, None);
 
         // ── Centred label ─────────────────────────────────────────────────────
         let label = self.selected_text();
@@ -361,7 +361,7 @@ impl ToggleSelector {
         let truncated: String = label.chars().take(max_cols).collect();
         // Centre the text inside the label zone.
         let pad = ((max_cols.saturating_sub(truncated.chars().count())) / 2) as f32;
-        engine.ui.ui_text(lbl_x + pad * tw, y, &truncated, TEXT, TRANSP);
+        engine.ui.ui_text(lbl_x + pad * tw, y, &truncated, TEXT, TRANSP, None);
 
         // ── Interaction ───────────────────────────────────────────────────────
         let mut result = None;

@@ -4,6 +4,7 @@ pub mod pipeline;
 pub mod scanline_pipeline;
 pub mod sprite_atlas;
 pub mod text;
+pub mod text_pipeline;
 pub mod utils;
 
 use std::sync::Arc;
@@ -17,8 +18,32 @@ use particle_pipeline::{ParticlePipeline, ParticleVertex, create_particle_pipeli
 use pipeline::{TilePipeline, TileVertex, create_tile_pipeline, orthographic_projection};
 use scanline_pipeline::{ScanlinePass, create_scanline_pass, resize_scanline_pass};
 use sprite_atlas::SpriteAtlas;
+use text::Vertex as TextVertex;
+use text_pipeline::{TextPipeline, create_text_pipeline};
 
 use crate::camera::CameraUniform;
+
+// ── MtsdfParams ───────────────────────────────────────────────────────────────
+
+/// Per-font parameters uploaded to the text shader's group(1) binding(2).
+///
+/// `distance_range` comes from the msdf-atlas-gen JSON (`atlas.distanceRange`).
+/// `atlas_width` / `atlas_height` are read directly from the loaded PNG texture.
+/// The shader uses these to compute the correct screen-pixel AA band at any scale.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct MtsdfParams {
+    distance_range: f32,
+    atlas_width:    f32,
+    atlas_height:   f32,
+    _pad:           f32,
+}
+
+// The MTSDF font atlas is baked in at compile time.
+// It is loaded as a *separate* texture from the tile atlas so it can use
+// Linear filtering (required for SDF reconstruction) and Rgba8Unorm format
+// (no gamma conversion — distance values are linear).
+static MTSDF_FONT_PNG: &[u8] = include_bytes!("../../resources/font_atlas.png");
 
 pub struct Renderer {
     pub window: Arc<Window>,
@@ -28,37 +53,96 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     tile_pipeline: TilePipeline,
     particle_pipeline: ParticlePipeline,
-    /// Static orthographic projection (no camera) — used exclusively by the UI pass.
+    /// MTSDF text pipeline (separate shader, vertex format, and sampler).
+    text_pipeline: TextPipeline,
+    /// Static orthographic projection (no camera) — used by UI and text passes.
     projection_buffer: wgpu::Buffer,
     projection_bind_group: wgpu::BindGroup,
+    /// Text pipeline's own projection bind group (same buffer, compatible layout).
+    text_projection_bind_group: wgpu::BindGroup,
     /// Camera view-projection buffer — used by world passes (char, sprite, particle).
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
-    /// Bind group for the character/glyph atlas (always present).
+    /// Bind group for the character/glyph tile atlas (always present).
     atlas_bind_group: wgpu::BindGroup,
     /// Bind group for the optional sprite atlas (None until load_sprite_folder is called).
     sprite_atlas_bind_group: Option<wgpu::BindGroup>,
+    /// Keeps the MTSDF font GPU texture alive (TextureView holds a ref-count
+    /// internally, but storing the Texture here makes ownership unambiguous).
+    #[allow(dead_code)]
+    font_texture: wgpu::Texture,
+    /// Bind group for the MTSDF font atlas (Linear sampler, Rgba8Unorm, + params).
+    font_bind_group: wgpu::BindGroup,
+    /// Cached MTSDF parameters (distance_range, atlas size) mirrored on the CPU
+    /// so `set_mtsdf_distance_range` can patch only the range without re-reading
+    /// the buffer from the GPU.
+    mtsdf_params: MtsdfParams,
+    /// GPU buffer for [`MtsdfParams`]; written via `queue.write_buffer`.
+    mtsdf_params_buffer: wgpu::Buffer,
+    // ── Persistent geometry buffers (capacity-doubling) ──────────────────
+    // All six buffers below use the same strategy: reallocate only when the
+    // current capacity is exceeded; write new data each frame via write_buffer.
+    // This avoids per-frame GPU allocations on the hot rendering path.
+    char_vertex_buffer: Option<wgpu::Buffer>,
+    char_vertex_buffer_capacity: u32,
+    sprite_vertex_buffer: Option<wgpu::Buffer>,
+    sprite_vertex_buffer_capacity: u32,
+    particle_vertex_buffer: Option<wgpu::Buffer>,
+    particle_vertex_buffer_capacity: u32,
+    text_vertex_buffer: Option<wgpu::Buffer>,
+    text_vertex_buffer_capacity: u32,
+    text_index_buffer: Option<wgpu::Buffer>,
+    text_index_buffer_capacity: u32,
     pub(crate) atlas: Atlas,
     /// Loaded sprite atlas metadata (UVs, tile spans, etc.).
     pub(crate) sprite_atlas: Option<SpriteAtlas>,
     // ── UI overlay vertex buffer (persistent, invalidated by FNV hash) ─────
-    /// Persistent GPU vertex buffer for UI overlay; reallocated only when
-    /// vertex count exceeds current capacity (not every frame).
     ui_vertex_buffer: Option<wgpu::Buffer>,
-    /// Number of TileVertex slots the current ui_vertex_buffer can hold.
     ui_vertex_buffer_capacity: u32,
-    /// FNV-1a hash of the last uploaded UI vertex bytes; used to skip
-    /// redundant write_buffer calls when UI is unchanged.
     ui_vertex_hash: u64,
     /// Optional CRT scanline post-process pass.
     scanline_pass: Option<ScanlinePass>,
 }
 
 /// FNV-1a 64-bit hash — used to detect unchanged UI vertex data.
+/// Algorithm: XOR byte into accumulator, then multiply by the FNV prime.
 fn fnv1a_64(data: &[u8]) -> u64 {
     data.iter().fold(14695981039346656037u64, |h, &b| {
-        h.wrapping_mul(1099511628211) ^ b as u64
+        (h ^ b as u64).wrapping_mul(1099511628211)
     })
+}
+
+/// Load a PNG from raw bytes as an `Rgba8Unorm` texture (no gamma conversion).
+/// Used for the MTSDF atlas where channel values are linear distance fields.
+fn load_rgba8_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    png_bytes: &[u8],
+    label: &str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let img = image::load_from_memory(png_bytes)
+        .expect("failed to load MTSDF font PNG")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Rgba8Unorm (not sRGB) — SDF values must not be gamma-corrected.
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &img,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 impl Renderer {
@@ -98,6 +182,7 @@ impl Renderer {
 
         let atlas = Atlas::from_png(&device, &queue, png_bytes, tile_w, tile_h);
         let tile_pipeline = create_tile_pipeline(&device, format);
+        let text_pipeline = create_text_pipeline(&device, format);
 
         let particle_pipeline = create_particle_pipeline(
             &device,
@@ -122,9 +207,17 @@ impl Renderer {
             }],
         });
 
+        // Text pipeline uses its own layout but the same buffer.
+        let text_projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("text_projection_bg"),
+            layout: &text_pipeline.projection_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: projection_buffer.as_entire_binding(),
+            }],
+        });
+
         // ── Camera view-projection buffer (world passes) ──────────────────
-        // Initialised to the identity ortho so the first frame looks correct
-        // even before Camera::build_view_proj is called.
         let cam_uniform = CameraUniform::identity_ortho(
             config.width as f32,
             config.height as f32,
@@ -144,6 +237,7 @@ impl Renderer {
             }],
         });
 
+        // ── Tile atlas bind group (Nearest sampler) ───────────────────────
         let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("atlas_bg"),
             layout: &tile_pipeline.atlas_bind_group_layout,
@@ -155,6 +249,51 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&atlas.sampler),
+                },
+            ],
+        });
+
+        // ── MTSDF font atlas (Linear sampler, Rgba8Unorm) ─────────────────
+        let (font_texture, font_view) =
+            load_rgba8_texture(&device, &queue, MTSDF_FONT_PNG, "mtsdf_font_atlas");
+        let font_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("mtsdf_font_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        // Initialise MTSDF params from the loaded texture dimensions.
+        // distance_range defaults to 4.0 (common msdf-atlas-gen default).
+        // Callers should invoke `set_mtsdf_distance_range` after loading the
+        // font JSON to supply the exact value for their atlas.
+        let mtsdf_params = MtsdfParams {
+            distance_range: 4.0,
+            atlas_width:    font_texture.width() as f32,
+            atlas_height:   font_texture.height() as f32,
+            _pad: 0.0,
+        };
+        let mtsdf_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mtsdf_params_buffer"),
+            contents: bytemuck::cast_slice(&[mtsdf_params]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let font_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("font_bg"),
+            layout: &text_pipeline.font_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&font_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&font_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: mtsdf_params_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -173,12 +312,28 @@ impl Renderer {
             config,
             tile_pipeline,
             particle_pipeline,
+            text_pipeline,
             projection_buffer,
             projection_bind_group,
+            text_projection_bind_group,
             camera_buffer,
             camera_bind_group,
             atlas_bind_group,
             sprite_atlas_bind_group: None,
+            font_texture,
+            font_bind_group,
+            mtsdf_params,
+            mtsdf_params_buffer,
+            char_vertex_buffer: None,
+            char_vertex_buffer_capacity: 0,
+            sprite_vertex_buffer: None,
+            sprite_vertex_buffer_capacity: 0,
+            particle_vertex_buffer: None,
+            particle_vertex_buffer_capacity: 0,
+            text_vertex_buffer: None,
+            text_vertex_buffer_capacity: 0,
+            text_index_buffer: None,
+            text_index_buffer_capacity: 0,
             atlas,
             sprite_atlas: None,
             ui_vertex_buffer: None,
@@ -189,7 +344,6 @@ impl Renderer {
     }
 
     /// Load all `.png` files from `path` (recursively) into the sprite atlas.
-    /// Must be called once during initialisation, before the game loop starts.
     pub fn load_sprite_folder(&mut self, path: &str, tile_w: u32, tile_h: u32) {
         let atlas = SpriteAtlas::load_folder(&self.device, &self.queue, path, tile_w, tile_h);
 
@@ -220,7 +374,6 @@ impl Renderer {
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
 
-        // Keep the UI projection up-to-date with the window size.
         let proj = orthographic_projection(new_size.width as f32, new_size.height as f32);
         self.queue
             .write_buffer(&self.projection_buffer, 0, bytemuck::cast_slice(&proj));
@@ -231,7 +384,6 @@ impl Renderer {
     }
 
     /// Upload a new camera view-projection matrix to the GPU.
-    /// Call this once per frame (after `Camera::tick`, before `render`).
     pub fn update_camera(&mut self, uniform: &CameraUniform) {
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -244,41 +396,120 @@ impl Renderer {
         self.config.format
     }
 
+    /// Update the MTSDF distance range used by the text shader.
+    ///
+    /// Call this once after registering a font via `TextLayer::set_font`, passing
+    /// `font.distance_range` from the loaded [`Font`].  The atlas dimensions are
+    /// taken from the actual GPU texture and do not need to be supplied again.
+    ///
+    /// [`Font`]: super::text::Font
+    pub fn set_mtsdf_distance_range(&mut self, range: f32) {
+        self.mtsdf_params.distance_range = range;
+        self.queue.write_buffer(
+            &self.mtsdf_params_buffer,
+            0,
+            bytemuck::cast_slice(&[self.mtsdf_params]),
+        );
+    }
+
     /// Render one frame.
     ///
     /// Draw order within the single render pass:
-    /// 1. `char_verts`     — character atlas (bg solid fills + char glyphs) [camera]
-    /// 2. `sprite_verts`   — sprite atlas (static and animated sprites)     [camera]
-    /// 3. `particle_verts` — particle pipeline                               [camera]
-    /// 4. `ui_verts`       — UI overlay (char atlas, always on top, Layer 2) [screen]
+    /// 1. `char_verts`     — character tile atlas (bg fills + char glyphs)   [camera]
+    /// 2. `sprite_verts`   — sprite atlas (static and animated sprites)       [camera]
+    /// 3. `particle_verts` — particle pipeline                                [camera]
+    /// 4. `ui_verts`       — UI solid fills (TileVertex, Layer 2)             [screen]
+    /// 5. `text_verts`     — MTSDF text (Labels + ui_char_at)                 [screen]
     ///
-    /// Passes 1–3 use the camera view-projection (`camera_bind_group`) so they
-    /// scroll/zoom with the camera.  Pass 4 uses the plain orthographic projection
-    /// (`projection_bind_group`) so UI stays fixed on screen regardless of camera.
-    ///
-    /// The UI vertex buffer is persistent and only uploaded to the GPU when
-    /// the vertex content changes (FNV-1a hash-based invalidation).
+    /// Passes 1–3 use the camera bind group (scroll/zoom).
+    /// Passes 4–5 use the plain projection bind group (screen-fixed).
     pub fn render(
         &mut self,
         char_verts: &[TileVertex],
         sprite_verts: &[TileVertex],
         particle_verts: &[ParticleVertex],
         ui_verts: &[TileVertex],
+        text_verts: &[TextVertex],
+        text_indices: &[u16],
     ) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        // ── Persistent buffer helpers ─────────────────────────────────────
+        //
+        // Shared capacity-doubling logic used by all six geometry buffers.
+        // Reallocates only when the current capacity is exceeded, then writes
+        // new data each frame via `write_buffer` (no map/unmap overhead).
+        macro_rules! upload_vertex_buf {
+            ($buf:expr, $cap:expr, $data:expr, $ty:ty, $label:literal) => {
+                if !$data.is_empty() {
+                    let count = $data.len() as u32;
+                    if count > $cap || $buf.is_none() {
+                        let new_cap = count.next_power_of_two().max(256);
+                        $buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some($label),
+                            size: new_cap as u64 * std::mem::size_of::<$ty>() as u64,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }));
+                        $cap = new_cap;
+                    }
+                    self.queue.write_buffer(
+                        $buf.as_ref().unwrap(), 0, bytemuck::cast_slice($data));
+                }
+            };
+        }
+
+        upload_vertex_buf!(self.char_vertex_buffer,     self.char_vertex_buffer_capacity,     char_verts,     TileVertex,     "char_vertex_buffer");
+        upload_vertex_buf!(self.sprite_vertex_buffer,   self.sprite_vertex_buffer_capacity,   sprite_verts,   TileVertex,     "sprite_vertex_buffer");
+        upload_vertex_buf!(self.particle_vertex_buffer, self.particle_vertex_buffer_capacity, particle_verts, ParticleVertex, "particle_vertex_buffer");
+
+        // ── Text vertex/index buffer management ───────────────────────────
+        if !text_indices.is_empty() {
+            let vert_count = text_verts.len() as u32;
+            if vert_count > self.text_vertex_buffer_capacity || self.text_vertex_buffer.is_none() {
+                let cap = vert_count.next_power_of_two().max(256);
+                self.text_vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("text_vertex_buffer"),
+                    size: cap as u64 * std::mem::size_of::<TextVertex>() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.text_vertex_buffer_capacity = cap;
+            }
+            self.queue.write_buffer(
+                self.text_vertex_buffer.as_ref().unwrap(),
+                0,
+                bytemuck::cast_slice(text_verts),
+            );
+
+            let idx_count = text_indices.len() as u32;
+            if idx_count > self.text_index_buffer_capacity || self.text_index_buffer.is_none() {
+                let cap = idx_count.next_power_of_two().max(256);
+                self.text_index_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("text_index_buffer"),
+                    size: cap as u64 * std::mem::size_of::<u16>() as u64,
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.text_index_buffer_capacity = cap;
+            }
+            self.queue.write_buffer(
+                self.text_index_buffer.as_ref().unwrap(),
+                0,
+                bytemuck::cast_slice(text_indices),
+            );
+        }
+
         // ── UI vertex buffer invalidation ─────────────────────────────────
-        // Only reallocate / re-upload when the UI vertex data actually changes.
         if !ui_verts.is_empty() {
             let ui_bytes: &[u8] = bytemuck::cast_slice(ui_verts);
             let new_hash = fnv1a_64(ui_bytes);
             let new_count = ui_verts.len() as u32;
 
             if new_count > self.ui_vertex_buffer_capacity || self.ui_vertex_buffer.is_none() {
-                // Grow the buffer (next power-of-two, min 256 vertices).
                 let capacity = new_count.next_power_of_two().max(256);
                 self.ui_vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("ui_vertex_buffer"),
@@ -287,7 +518,7 @@ impl Renderer {
                     mapped_at_creation: false,
                 }));
                 self.ui_vertex_buffer_capacity = capacity;
-                self.ui_vertex_hash = !new_hash; // Force upload on resize.
+                self.ui_vertex_hash = !new_hash;
             }
 
             if new_hash != self.ui_vertex_hash {
@@ -304,7 +535,6 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // Pick render target: intermediate texture (scanlines) or swapchain directly.
         let target_view: &wgpu::TextureView = match &self.scanline_pass {
             Some(sp) => &sp.render_view,
             None     => &view,
@@ -319,10 +549,7 @@ impl Renderer {
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
+                            r: 0.0, g: 0.0, b: 0.0, a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -333,56 +560,49 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            // ── Pass 1: character atlas (bg grid + char glyph grid) [camera] ─
+            // ── Pass 1: character tile atlas [camera] ─────────────────────
             if !char_verts.is_empty() {
-                let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("char_vertex_buffer"),
-                    contents: bytemuck::cast_slice(char_verts),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                pass.set_pipeline(&self.tile_pipeline.render_pipeline);
-                pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, vbuf.slice(..));
-                pass.draw(0..char_verts.len() as u32, 0..1);
+                if let Some(vbuf) = &self.char_vertex_buffer {
+                    let byte_len = char_verts.len() as u64 * std::mem::size_of::<TileVertex>() as u64;
+                    pass.set_pipeline(&self.tile_pipeline.render_pipeline);
+                    pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+                    pass.set_vertex_buffer(0, vbuf.slice(..byte_len));
+                    pass.draw(0..char_verts.len() as u32, 0..1);
+                }
             }
 
-            // ── Pass 2: sprite atlas (static + animated sprites) [camera] ────
+            // ── Pass 2: sprite atlas [camera] ─────────────────────────────
             if !sprite_verts.is_empty() {
-                if let Some(sprite_bg) = &self.sprite_atlas_bind_group {
-                    let vbuf =
-                        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("sprite_vertex_buffer"),
-                            contents: bytemuck::cast_slice(sprite_verts),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+                if let (Some(vbuf), Some(sprite_bg)) =
+                    (&self.sprite_vertex_buffer, &self.sprite_atlas_bind_group)
+                {
+                    let byte_len = sprite_verts.len() as u64 * std::mem::size_of::<TileVertex>() as u64;
                     pass.set_pipeline(&self.tile_pipeline.render_pipeline);
                     pass.set_bind_group(0, &self.camera_bind_group, &[]);
                     pass.set_bind_group(1, sprite_bg, &[]);
-                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_vertex_buffer(0, vbuf.slice(..byte_len));
                     pass.draw(0..sprite_verts.len() as u32, 0..1);
                 }
             }
 
-            // ── Pass 3: particles [camera] ────────────────────────────────────
+            // ── Pass 3: particles [camera] ────────────────────────────────
             if !particle_verts.is_empty() {
-                let pbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("particle_vertex_buffer"),
-                    contents: bytemuck::cast_slice(particle_verts),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                pass.set_pipeline(&self.particle_pipeline.render_pipeline);
-                pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                pass.set_vertex_buffer(0, pbuf.slice(..));
-                pass.draw(0..particle_verts.len() as u32, 0..1);
+                if let Some(pbuf) = &self.particle_vertex_buffer {
+                    let byte_len = particle_verts.len() as u64 * std::mem::size_of::<ParticleVertex>() as u64;
+                    pass.set_pipeline(&self.particle_pipeline.render_pipeline);
+                    pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    pass.set_vertex_buffer(0, pbuf.slice(..byte_len));
+                    pass.draw(0..particle_verts.len() as u32, 0..1);
+                }
             }
 
-            // ── Pass 4: UI overlay (char atlas, always on top) [screen] ──────
-            // Uses the plain projection_bind_group so UI ignores the camera.
+            // ── Pass 4: UI solid fills (TileVertex, screen-fixed) ─────────
             if !ui_verts.is_empty() {
                 if let Some(ui_buf) = &self.ui_vertex_buffer {
                     let count = ui_verts.len() as u32;
-                    let byte_len = (count as usize * std::mem::size_of::<TileVertex>()) as u64;
+                    let byte_len =
+                        (count as usize * std::mem::size_of::<TileVertex>()) as u64;
                     pass.set_pipeline(&self.tile_pipeline.render_pipeline);
                     pass.set_bind_group(0, &self.projection_bind_group, &[]);
                     pass.set_bind_group(1, &self.atlas_bind_group, &[]);
@@ -390,9 +610,30 @@ impl Renderer {
                     pass.draw(0..count, 0..1);
                 }
             }
+
+            // ── Pass 5: MTSDF text (Labels + ui_char_at, screen-fixed) ───
+            if !text_indices.is_empty() {
+                // Buffers were uploaded in the pre-pass section above.
+                let vbyte_len =
+                    text_verts.len() as u64 * std::mem::size_of::<TextVertex>() as u64;
+                let ibyte_len =
+                    text_indices.len() as u64 * std::mem::size_of::<u16>() as u64;
+                pass.set_pipeline(&self.text_pipeline.render_pipeline);
+                pass.set_bind_group(0, &self.text_projection_bind_group, &[]);
+                pass.set_bind_group(1, &self.font_bind_group, &[]);
+                pass.set_vertex_buffer(
+                    0,
+                    self.text_vertex_buffer.as_ref().unwrap().slice(..vbyte_len),
+                );
+                pass.set_index_buffer(
+                    self.text_index_buffer.as_ref().unwrap().slice(..ibyte_len),
+                    wgpu::IndexFormat::Uint16,
+                );
+                pass.draw_indexed(0..text_indices.len() as u32, 0, 0..1);
+            }
         }
 
-        // ── Scanline blit pass (only when enabled) ───────────────────────
+        // ── Scanline blit pass ────────────────────────────────────────────
         if let Some(ref sp) = self.scanline_pass {
             let mut blit = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scanline_blit"),

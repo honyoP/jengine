@@ -12,7 +12,7 @@ use jengine::engine::{
 use jengine::renderer::text::Font;
 use jengine::scene::{Scene, SceneAction, SceneStack};
 use jengine::window::{WindowConfig, WindowMode, apply_window_settings};
-use jengine::{DEFAULT_TILESET, DEFAULT_FONT_GLYPHS, DEFAULT_TILE_W, DEFAULT_TILE_H};
+use jengine::{DEFAULT_TILESET, DEFAULT_FONT_METADATA, DEFAULT_TILE_H};
 
 // ── Palette ─────────────────────────────────────────────────────────────────
 const PANEL_BG:     Color = Color([0.06, 0.09, 0.09, 1.0]);
@@ -380,10 +380,11 @@ impl Scene for MainMenuScene {
         let by = (sh - panel_h) * 0.5;
         engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
 
-        // Title "JENGINE"
+        // Title "JENGINE" — rendered at 1.5× tile height to showcase custom font_size.
         let title = "JENGINE";
+        let big_h  = th * 1.5;
         let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_text(title_x, by + (th - big_h) * 0.5 + th * 0.25, title, UI_BRIGHT, PANEL_BG, Some(big_h));
         engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
 
         // Menu items
@@ -395,13 +396,13 @@ impl Scene for MainMenuScene {
             let bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
             let fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
             let prefix = if is_sel { "> " } else { "  " };
-            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg);
+            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg, None);
         }
 
         // Footer hint
         let footer_y = by + panel_h - th;
         engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select ", UI_DIM, PANEL_BG);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select ", UI_DIM, PANEL_BG, None);
     }
 }
 
@@ -460,7 +461,7 @@ impl Scene for OptionsScene {
 
         let title = " OPTIONS ";
         let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG, None);
         engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
 
         let col_x  = bx + tw * 2.0;
@@ -468,7 +469,7 @@ impl Scene for OptionsScene {
         let ctrl_w = panel_w - tw * 16.0;
 
         // Row 0 — Resolution dropdown
-        engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG);
+        engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG, None);
         if let Some(_idx) = self.dd_resolution.draw(engine, ctrl_x, by + th * 3.5, ctrl_w) {
             let resolutions = ["1280×720", "1920×1080", "2560×1440", "3840×2160"];
             let (pw, ph) = match self.dd_resolution.selected {
@@ -483,11 +484,11 @@ impl Scene for OptionsScene {
             self.window_config.physical_height = ph;
             self.window_config.logical_width   = pw;
             self.window_config.logical_height  = ph;
-            apply_window_settings(&engine.ui.renderer.window, &self.window_config);
+            apply_window_settings(&engine.renderer.window, &self.window_config);
         }
 
         // Row 1 — Window mode toggle
-        engine.ui.ui_text(col_x, by + th * 6.0, "Window Mode", UI_TEXT, PANEL_BG);
+        engine.ui.ui_text(col_x, by + th * 6.0, "Window Mode", UI_TEXT, PANEL_BG, None);
         if let Some(idx) = self.ts_window_mode.draw(engine, ctrl_x, by + th * 6.0, ctrl_w) {
             self.window_config.mode = match idx {
                 0 => WindowMode::Windowed,
@@ -495,7 +496,7 @@ impl Scene for OptionsScene {
                 2 => WindowMode::Fullscreen,
                 _ => WindowMode::Windowed,
             };
-            apply_window_settings(&engine.ui.renderer.window, &self.window_config);
+            apply_window_settings(&engine.renderer.window, &self.window_config);
         }
 
         // Back button
@@ -505,7 +506,7 @@ impl Scene for OptionsScene {
         let btn_y = by + panel_h - th * 2.5;
         let hov = engine.ui.is_mouse_over(btn_x, btn_y, btn_w, th);
         let fg = if hov { UI_BRIGHT } else { UI_TEXT };
-        engine.ui.ui_text(btn_x, btn_y, btn_label, fg, PANEL_BG);
+        engine.ui.ui_text(btn_x, btn_y, btn_label, fg, PANEL_BG, None);
         if engine.ui.was_clicked(btn_x, btn_y, btn_w, th) && !engine.ui.click_consumed {
             engine.ui.click_consumed = true;
             // We can't return an action from draw, so the Back button sets a flag
@@ -518,7 +519,7 @@ impl Scene for OptionsScene {
         // Footer hint
         let footer_y = by + panel_h - th;
         engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [Esc] Back ", UI_DIM, PANEL_BG);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [Esc] Back ", UI_DIM, PANEL_BG, None);
     }
 }
 
@@ -547,7 +548,7 @@ impl GameScene {
             initialized:   false,
             move_cooldown: 0,
             ui:            UiState::new(),
-            status_label:  Label::new([0.0, 0.0], 0, DEFAULT_TILE_H as f32, UI_TEXT.0),
+            status_label:  Label::new([0.0, 0.0], DEFAULT_TILE_H as f32, UI_TEXT.0),
             window_config: WindowConfig::default(),
             zoom_target:   1.0,
         }
@@ -687,20 +688,20 @@ impl GameScene {
         engine.ui.ui_progress_bar(0.0, th, sw - tw * 3.0, th, hp_pct, HP_FILL, HP_EMPTY);
         engine.ui.ui_text(0.0, th,
             &format!("HP: {:.0} / {:.0}", self.ui.player_hp, self.ui.player_max_hp),
-            Color::WHITE, Color::TRANSPARENT);
+            Color::WHITE, Color::TRANSPARENT, None);
         let icon_x = sw - (2.0 * tw) * 3.0;
         engine.ui.ui_rect(icon_x, th, tw * 3.0, th, PANEL_BG);
         let inv_color = if self.ui.inventory_open { UI_BRIGHT } else { UI_DIM };
         let log_color = if self.ui.log_open       { UI_BRIGHT } else { UI_DIM };
-        engine.ui.ui_text(icon_x,          th, "[i]", inv_color, Color::TRANSPARENT);
-        engine.ui.ui_text(icon_x + (2.0 + tw) * 2.0, th, "[l]", log_color, Color::TRANSPARENT);
+        engine.ui.ui_text(icon_x,          th, "[i]", inv_color, Color::TRANSPARENT, None);
+        engine.ui.ui_text(icon_x + (2.0 + tw) * 2.0, th, "[l]", log_color, Color::TRANSPARENT, None);
 
         engine.ui.ui_rect(0.0, th * 2.0, sw, th, PANEL_BG);
         let xp_pct = (self.ui.player_xp / self.ui.player_max_xp).clamp(0.0, 1.0);
         engine.ui.ui_progress_bar(0.0, th * 2.0, sw - tw * 3.0, th, xp_pct, XP_FILL, XP_EMPTY);
         engine.ui.ui_text(0.0, th * 2.0,
             &format!("LVL: 1   EXP: {:.0} / {:.0}", self.ui.player_xp, self.ui.player_max_xp),
-            Color::WHITE, Color::TRANSPARENT);
+            Color::WHITE, Color::TRANSPARENT, None);
         engine.ui.ui_rect(icon_x, th * 2.0, tw * 3.0, th, PANEL_BG);
     }
 
@@ -724,17 +725,17 @@ impl GameScene {
         engine.ui.ui_vline(p1w,       y0, th,  PANEL_BORDER);
         engine.ui.ui_vline(p1w + p2w, y0, th,  PANEL_BORDER);
 
-        engine.ui.ui_text(tw * 0.5,         y0, "ACTIVE EFFECTS:", UI_DIM, Color::TRANSPARENT);
-        engine.ui.ui_text(tw * 10.5,        y0, "[burning]", UI_RED, Color::TRANSPARENT);
-        engine.ui.ui_text(tw * 19.5,        y0, "[haste]", UI_ACCENT, Color::TRANSPARENT);
-        engine.ui.ui_text(p1w + tw * 0.5,   y0, "TARGET:", UI_DIM, Color::TRANSPARENT);
-        engine.ui.ui_text(p1w + tw * 8.0,   y0, "Small Enemy", UI_TEXT, Color::TRANSPARENT);
-        engine.ui.ui_text(p1w + tw * 20.0,  y0, "[Hostile]", UI_RED, Color::TRANSPARENT);
-        engine.ui.ui_text(p1w+p2w + tw*0.5, y0, "[f] attack  [r] parry  [w] dodge", UI_TEXT, Color::TRANSPARENT);
+        engine.ui.ui_text(tw * 0.5,         y0, "ACTIVE EFFECTS:", UI_DIM, Color::TRANSPARENT, None);
+        engine.ui.ui_text(tw * 10.5,        y0, "[burning]", UI_RED, Color::TRANSPARENT, None);
+        engine.ui.ui_text(tw * 19.5,        y0, "[haste]", UI_ACCENT, Color::TRANSPARENT, None);
+        engine.ui.ui_text(p1w + tw * 0.5,   y0, "TARGET:", UI_DIM, Color::TRANSPARENT, None);
+        engine.ui.ui_text(p1w + tw * 8.0,   y0, "Small Enemy", UI_TEXT, Color::TRANSPARENT, None);
+        engine.ui.ui_text(p1w + tw * 20.0,  y0, "[Hostile]", UI_RED, Color::TRANSPARENT, None);
+        engine.ui.ui_text(p1w+p2w + tw*0.5, y0, "[f] attack  [r] parry  [w] dodge", UI_TEXT, Color::TRANSPARENT, None);
 
         engine.ui.ui_rect(0.0, y1, sw, th, PANEL_BG);
         engine.ui.ui_hline(0.0, y1, sw, PANEL_BORDER);
-        engine.ui.ui_text(0.0, y1, "ABILITIES:", UI_DIM, Color::TRANSPARENT);
+        engine.ui.ui_text(0.0, y1, "ABILITIES:", UI_DIM, Color::TRANSPARENT, None);
 
         engine.ui.ui_rect(0.0, y2, sw, th, PANEL_BG);
         let skills = ["[1] Strike", "[2] Dash", "[3] Heal", "[4] Block", "[5] Roll"];
@@ -743,7 +744,7 @@ impl GameScene {
             let sx = i as f32 * slot_w;
             engine.ui.ui_rect(sx + 1.0, y2 + 1.0, slot_w - 2.0, th - 2.0,
                 Color([0.08, 0.12, 0.12, 1.0]));
-            engine.ui.ui_text(sx + tw * 0.5, y2, s, UI_TEXT, Color::TRANSPARENT);
+            engine.ui.ui_text(sx + tw * 0.5, y2, s, UI_TEXT, Color::TRANSPARENT, None);
             if i + 1 < skills.len() {
                 engine.ui.ui_vline(sx + slot_w, y2, th, PANEL_BORDER);
             }
@@ -769,14 +770,14 @@ impl GameScene {
         let max_rows  = (inner_h / th) as usize;
 
         engine.ui.ui_box(panel_x, panel_y, panel_w, panel_h, BorderStyle::Single, PANEL_BORDER, LOG_BG);
-        engine.ui.ui_text(panel_x + tw * 2.0, panel_y, " MESSAGE LOG ", UI_BRIGHT, LOG_BG);
+        engine.ui.ui_text(panel_x + tw * 2.0, panel_y, " MESSAGE LOG ", UI_BRIGHT, LOG_BG, None);
 
         let msgs: Vec<&LogEntry> = self.ui.log_messages.iter().rev().take(max_rows).collect();
         for (row, entry) in msgs.into_iter().rev().enumerate() {
             let row_y = inner_y + row as f32 * th;
             let max_cols = (inner_w / tw) as usize;
             let truncated: String = entry.text.chars().take(max_cols).collect();
-            engine.ui.ui_text(inner_x, row_y, &truncated, entry.color, Color::TRANSPARENT);
+            engine.ui.ui_text(inner_x, row_y, &truncated, entry.color, Color::TRANSPARENT, None);
         }
     }
 
@@ -805,7 +806,7 @@ impl GameScene {
             let bg = if is_active { Color([0.10, 0.15, 0.14, 1.0]) } else { PANEL_BG };
             let w  = label.chars().count() as f32 * tw;
             engine.ui.ui_rect(tab_x, by, w, th, bg);
-            engine.ui.ui_text(tab_x, by, label, fg, bg);
+            engine.ui.ui_text(tab_x, by, label, fg, bg, None);
             tab_x += w + tw;
         }
 
@@ -823,7 +824,7 @@ impl GameScene {
         let footer_y = by + bh - th;
         engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y,
-            " [Tab] Switch  [Esc] Close ", UI_DIM, Color::TRANSPARENT);
+            " [Tab] Switch  [Esc] Close ", UI_DIM, Color::TRANSPARENT, None);
     }
 
     fn draw_inventory_content(&mut self, engine: &mut jEngine,
@@ -832,7 +833,7 @@ impl GameScene {
         let th = engine.tile_height() as f32;
 
         let col_w = w / 3.0;
-        engine.ui.ui_text(x, y, "EQUIPMENT", UI_ACCENT, Color::TRANSPARENT);
+        engine.ui.ui_text(x, y, "EQUIPMENT", UI_ACCENT, Color::TRANSPARENT, None);
         engine.ui.ui_hline(x, y + th, col_w, UI_DIM);
 
         let slots = [
@@ -845,13 +846,13 @@ impl GameScene {
         ];
         for (i, (slot, item)) in slots.iter().enumerate() {
             let sy = y + th * (i as f32 + 2.0);
-            engine.ui.ui_text(x, sy, slot, UI_DIM, Color::TRANSPARENT);
+            engine.ui.ui_text(x, sy, slot, UI_DIM, Color::TRANSPARENT, None);
             let item_color = if *item == "(empty)" { UI_DIM } else { UI_TEXT };
-            engine.ui.ui_text(x + tw * 12.0, sy, item, item_color, Color::TRANSPARENT);
+            engine.ui.ui_text(x + tw * 12.0, sy, item, item_color, Color::TRANSPARENT, None);
         }
 
         let list_x = x + col_w + tw;
-        engine.ui.ui_text(list_x, y, "ITEMS", UI_ACCENT, Color::TRANSPARENT);
+        engine.ui.ui_text(list_x, y, "ITEMS", UI_ACCENT, Color::TRANSPARENT, None);
         engine.ui.ui_hline(list_x, y + th, w - col_w - tw, UI_DIM);
 
         let items = [
@@ -870,8 +871,8 @@ impl GameScene {
         for (i, (key, name, color)) in items.iter().enumerate() {
             let iy = y + th * (i as f32 + 2.0);
             if iy + th > y + h { break; }
-            engine.ui.ui_text(list_x,          iy, key,  UI_DIM,   Color::TRANSPARENT);
-            engine.ui.ui_text(list_x + tw * 3.0, iy, name, *color, Color::TRANSPARENT);
+            engine.ui.ui_text(list_x,          iy, key,  UI_DIM,   Color::TRANSPARENT, None);
+            engine.ui.ui_text(list_x + tw * 3.0, iy, name, *color, Color::TRANSPARENT, None);
         }
     }
 
@@ -879,7 +880,7 @@ impl GameScene {
                                x: f32, y: f32, _w: f32, _h: f32) {
         let th = engine.tile_height() as f32;
 
-        engine.ui.ui_text(x, y, "SKILL TREE", UI_ACCENT, Color::TRANSPARENT);
+        engine.ui.ui_text(x, y, "SKILL TREE", UI_ACCENT, Color::TRANSPARENT, None);
         engine.ui.ui_hline(x, y + th, _w, UI_DIM);
 
         let tree = [
@@ -897,7 +898,7 @@ impl GameScene {
             ("  Press [Enter] to unlock selected.",    UI_DIM),
         ];
         for (i, (line, color)) in tree.iter().enumerate() {
-            engine.ui.ui_text(x, y + th * (i as f32 + 2.0), line, *color, Color::TRANSPARENT);
+            engine.ui.ui_text(x, y + th * (i as f32 + 2.0), line, *color, Color::TRANSPARENT, None);
         }
     }
 
@@ -906,7 +907,7 @@ impl GameScene {
         let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
-        engine.ui.ui_text(x, y, "FACTIONS & RELATIONSHIPS", UI_ACCENT, Color::TRANSPARENT);
+        engine.ui.ui_text(x, y, "FACTIONS & RELATIONSHIPS", UI_ACCENT, Color::TRANSPARENT, None);
         engine.ui.ui_hline(x, y + th, w, UI_DIM);
 
         let factions = [
@@ -930,11 +931,11 @@ impl GameScene {
                             else if rep.contains('+') { HP_FILL }
                             else { UI_DIM };
 
-            engine.ui.ui_text(x,    fy, name,     UI_TEXT,    Color::TRANSPARENT);
-            engine.ui.ui_text(col2, fy, "Rep:",   UI_DIM,     Color::TRANSPARENT);
-            engine.ui.ui_text(col2 + tw * 5.0, fy, rep, rep_color, Color::TRANSPARENT);
-            engine.ui.ui_text(col3, fy, attitude, UI_DIM,     Color::TRANSPARENT);
-            engine.ui.ui_text(x,    fy + th, desc, UI_DIM,  Color::TRANSPARENT);
+            engine.ui.ui_text(x,    fy, name,     UI_TEXT,    Color::TRANSPARENT, None);
+            engine.ui.ui_text(col2, fy, "Rep:",   UI_DIM,     Color::TRANSPARENT, None);
+            engine.ui.ui_text(col2 + tw * 5.0, fy, rep, rep_color, Color::TRANSPARENT, None);
+            engine.ui.ui_text(col3, fy, attitude, UI_DIM,     Color::TRANSPARENT, None);
+            engine.ui.ui_text(x,    fy + th, desc, UI_DIM,  Color::TRANSPARENT, None);
             engine.ui.ui_hline(x,   fy + th * 2.0, w, Color([0.10, 0.15, 0.14, 1.0]));
         }
     }
@@ -959,14 +960,14 @@ impl GameScene {
 
         let name = dialogue.npc_name.clone();
         let name_x = bx + (bw - name.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(name_x, by + th * 1.5, &name, UI_BRIGHT, Color::TRANSPARENT);
+        engine.ui.ui_text(name_x, by + th * 1.5, &name, UI_BRIGHT, Color::TRANSPARENT, None);
         engine.ui.ui_hline(bx + tw, by + th * 2.5, bw - tw * 2.0, PANEL_BORDER);
 
         engine.ui.ui_text_wrapped(
             bx + tw * 2.0, by + th * 3.0,
             bw - tw * 4.0, th * 4.0,
             &dialogue.body,
-            UI_TEXT, Color::TRANSPARENT,
+            UI_TEXT, Color::TRANSPARENT, None
         );
 
         engine.ui.ui_hline(bx + tw, by + th * 7.0, bw - tw * 2.0, UI_DIM);
@@ -981,14 +982,14 @@ impl GameScene {
             let prefix = if is_sel { "> " } else { "  " };
             engine.ui.ui_text(bx + tw, oy,
                 &format!("{prefix}[{}] {opt}", i + 1),
-                row_fg, row_bg);
+                row_fg, row_bg, None);
         }
 
         let footer_y = by + bh - th;
         engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, PANEL_BORDER);
         engine.ui.ui_text(bx + tw * 2.0, footer_y,
             " [↑/↓] Navigate  [Enter] Select  [Esc] Cancel ",
-            UI_DIM, Color::TRANSPARENT);
+            UI_DIM, Color::TRANSPARENT, None);
     }
 }
 
@@ -1005,13 +1006,10 @@ impl Scene for GameScene {
         self.window_config.logical_width   = actual_w;
         self.window_config.logical_height  = actual_h;
 
-        if engine.ui.text.fonts.is_empty() {
-            if let Ok(font) = Font::from_atlas_json(
-                DEFAULT_FONT_GLYPHS,
-                DEFAULT_TILE_W * 16,
-                DEFAULT_TILE_H * 16,
-            ) {
-                engine.ui.text.add_font(font);
+        if engine.ui.text.font.is_none() {
+            if let Ok(font) = Font::from_mtsdf_json(DEFAULT_FONT_METADATA) {
+                engine.renderer.set_mtsdf_distance_range(font.distance_range);
+                engine.ui.text.set_font(font);
             }
         }
 
@@ -1056,7 +1054,7 @@ impl Scene for GameScene {
                 WindowMode::Borderless |
                 WindowMode::Fullscreen => WindowMode::Windowed,
             };
-            apply_window_settings(&engine.ui.renderer.window, &self.window_config);
+            apply_window_settings(&engine.renderer.window, &self.window_config);
         }
 
         update_particles(&mut self.world, engine.dt());
@@ -1464,7 +1462,7 @@ impl Scene for PauseOverlayScene {
         // Title "PAUSED"
         let title = "PAUSED";
         let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG);
+        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG, None);
         engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, PANEL_BORDER);
 
         // Menu items
@@ -1476,13 +1474,13 @@ impl Scene for PauseOverlayScene {
             let bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
             let fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
             let prefix = if is_sel { "> " } else { "  " };
-            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg);
+            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg, None);
         }
 
         // Footer hint
         let footer_y = by + panel_h - th;
         engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select  [Esc] Resume ", UI_DIM, PANEL_BG);
+        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select  [Esc] Resume ", UI_DIM, PANEL_BG, None);
     }
 }
 
