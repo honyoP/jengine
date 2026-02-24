@@ -221,8 +221,10 @@ impl<'a> Widget for IconText<'a> {
     }
     fn draw(&mut self, engine: &mut jEngine, x: f32, y: f32, _available_w: f32, _clip: Option<Rect>) {
         let color = self.color.unwrap_or(engine.ui.theme.text_normal);
-        engine.draw_sprite((x / engine.tile_width() as f32) as u32, (y / engine.tile_height() as f32) as u32, self.sprite, 1, color);
-        engine.ui.ui_text(x + engine.tile_width() as f32 + self.spacing, y, &self.text, color, Color::TRANSPARENT, None);
+        let tw = engine.tile_width() as f32;
+        let th = engine.tile_height() as f32;
+        engine.draw_ui_sprite(x, y, tw, th, self.sprite, color);
+        engine.ui.ui_text(x + tw + self.spacing, y, &self.text, color, Color::TRANSPARENT, None);
     }
 }
 

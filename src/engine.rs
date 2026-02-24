@@ -210,6 +210,8 @@ pub struct jEngine {
     /// Queued sprite draw calls (sprite atlas path); cleared before each render.
     sprite_commands: Vec<SpriteCommand>,
     particle_vertices: Vec<ParticleVertex>,
+    /// Screen-space sprite vertices (cleared each frame).
+    ui_sprite_vertices: Vec<TileVertex>,
     active_animations: Vec<ActiveAnimation>,
     /// Visual offsets for each entity, uploaded to the GPU as a storage buffer.
     /// We use [f32; 4] to ensure 16-byte alignment required by many GPUs for storage arrays.
@@ -264,6 +266,7 @@ impl jEngine {
             cached_char_verts: Vec::new(),
             sprite_commands: Vec::new(),
             particle_vertices: Vec::new(),
+            ui_sprite_vertices: Vec::new(),
             active_animations: Vec::new(),
             entity_offsets: vec![[0.0, 0.0, 0.0, 0.0]; MAX_ANIMATED_ENTITIES],
             entity_offsets_dirty: false,
@@ -455,6 +458,18 @@ impl jEngine {
         }
     }
 
+    /// Queue a sprite in screen-space pixels, bypassing the camera transform.
+    pub fn draw_ui_sprite(&mut self, x: f32, y: f32, w: f32, h: f32, name: &str, tint: Color) {
+        if let Some(data) = self.renderer.get_sprite_data(name) {
+            let z = self.ui.get_next_z();
+            let tl = TileVertex { position: [x,     y,     z], uv: data.uv_min,                  fg_color: tint.0, bg_color: [0.0; 4], entity_id: NO_ENTITY, layer_id: 0.5 };
+            let tr = TileVertex { position: [x + w, y,     z], uv: [data.uv_max[0], data.uv_min[1]], fg_color: tint.0, bg_color: [0.0; 4], entity_id: NO_ENTITY, layer_id: 0.5 };
+            let bl = TileVertex { position: [x,     y + h, z], uv: [data.uv_min[0], data.uv_max[1]], fg_color: tint.0, bg_color: [0.0; 4], entity_id: NO_ENTITY, layer_id: 0.5 };
+            let br = TileVertex { position: [x + w, y + h, z], uv: data.uv_max,                  fg_color: tint.0, bg_color: [0.0; 4], entity_id: NO_ENTITY, layer_id: 0.5 };
+            self.ui_sprite_vertices.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
+        }
+    }
+
     /// Queue a sprite linked to an ECS entity (always Layer 1).
     pub fn draw_sprite_entity(&mut self, x: u32, y: u32, name: &str, entity: Entity, tint: Color) {
         if let Some(data) = self.renderer.get_sprite_data(name) {
@@ -635,7 +650,7 @@ impl jEngine {
     }
 
     /// Build vertex data for the current frame.
-    fn build_vertices(&mut self) -> (Vec<TileVertex>, Vec<TileVertex>) {
+    fn build_vertices(&mut self) -> (Vec<TileVertex>, Vec<TileVertex>, Vec<TileVertex>) {
         let tile_w = self.ui.tile_w;
         let tile_h = self.ui.tile_h;
 
@@ -724,7 +739,7 @@ impl jEngine {
         // Move the cached char verts out (O(1) pointer swap, no allocation).
         // The caller in window_event restores them after the render call so the
         // cache is available for the next frame without reallocation.
-        (std::mem::take(&mut self.cached_char_verts), sprite_verts)
+        (std::mem::take(&mut self.cached_char_verts), sprite_verts, self.ui_sprite_vertices.clone())
     }
 
     fn handle_resize(&mut self) {
@@ -994,6 +1009,7 @@ impl ApplicationHandler for App {
 
                 engine.sprite_commands.clear();
                 engine.particle_vertices.clear();
+                engine.ui_sprite_vertices.clear();
                 engine.ui.clear();
                 self.game.render(engine);
 
@@ -1003,7 +1019,7 @@ impl ApplicationHandler for App {
                     engine.draw_debug_inspector(debug_widget);
                 }
 
-                let (char_verts, sprite_verts) = engine.build_vertices();
+                let (char_verts, sprite_verts, ui_sprite_verts) = engine.build_vertices();
                 let particle_verts = std::mem::take(&mut engine.particle_vertices);
                 let ui_verts = std::mem::take(&mut engine.ui.ui_vertices);
 
@@ -1012,7 +1028,7 @@ impl ApplicationHandler for App {
 
                 let text_verts   = std::mem::take(&mut engine.ui.text.vertices);
                 let text_indices = std::mem::take(&mut engine.ui.text.indices);
-                match engine.renderer.render(&char_verts, &sprite_verts, &particle_verts, &ui_verts, &text_verts, &text_indices) {
+                match engine.renderer.render(&char_verts, &sprite_verts, &particle_verts, &ui_verts, &ui_sprite_verts, &text_verts, &text_indices) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
                         let size = engine.renderer.window.inner_size();

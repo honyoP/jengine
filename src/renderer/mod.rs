@@ -110,6 +110,9 @@ pub struct Renderer {
     // ── Modern UI vertex buffer ──
     ui_modern_vertex_buffer: Option<wgpu::Buffer>,
     ui_modern_vertex_buffer_capacity: u32,
+    // ── UI Sprite vertex buffer (screen-space) ──
+    ui_sprite_vertex_buffer: Option<wgpu::Buffer>,
+    ui_sprite_vertex_buffer_capacity: u32,
     /// Post-processing stack for "juice" effects.
     pub post_process: PostProcessStack,
 }
@@ -398,6 +401,8 @@ impl Renderer {
             sprite_atlas: None,
             ui_modern_vertex_buffer: None,
             ui_modern_vertex_buffer_capacity: 0,
+            ui_sprite_vertex_buffer: None,
+            ui_sprite_vertex_buffer_capacity: 0,
             post_process,
         }
     }
@@ -506,6 +511,7 @@ impl Renderer {
         sprite_verts: &[TileVertex],
         particle_verts: &[ParticleVertex],
         ui_verts: &[UIVertex],
+        ui_sprite_verts: &[TileVertex],
         text_verts: &[TextVertex],
         text_indices: &[u16],
     ) -> Result<(), wgpu::SurfaceError> {
@@ -543,6 +549,7 @@ impl Renderer {
         upload_vertex_buf!(self.sprite_vertex_buffer,   self.sprite_vertex_buffer_capacity,   sprite_verts,   TileVertex,     "sprite_vertex_buffer");
         upload_vertex_buf!(self.particle_vertex_buffer, self.particle_vertex_buffer_capacity, particle_verts, ParticleVertex, "particle_vertex_buffer");
         upload_vertex_buf!(self.ui_modern_vertex_buffer, self.ui_modern_vertex_buffer_capacity, ui_verts, UIVertex, "ui_modern_vertex_buffer");
+        upload_vertex_buf!(self.ui_sprite_vertex_buffer, self.ui_sprite_vertex_buffer_capacity, ui_sprite_verts, TileVertex, "ui_sprite_vertex_buffer");
 
         // ── Text vertex/index buffer management ───────────────────────────
         if !text_indices.is_empty() {
@@ -669,7 +676,21 @@ impl Renderer {
                 }
             }
 
-            // ── Pass 5: MTSDF text (Labels + ui_char_at, screen-fixed) ───
+            // ── Pass 5: UI Sprites (screen-fixed) ────────────────────────
+            if !ui_sprite_verts.is_empty() {
+                if let (Some(vbuf), Some(sprite_bg)) = (&self.ui_sprite_vertex_buffer, &self.sprite_atlas_bind_group) {
+                    let count = ui_sprite_verts.len() as u32;
+                    let byte_len = (count as usize * std::mem::size_of::<TileVertex>()) as u64;
+                    pass.set_pipeline(&self.tile_pipeline.render_pipeline);
+                    pass.set_bind_group(0, &self.ui_projection_bind_group, &[]); // Screen-space
+                    pass.set_bind_group(1, sprite_bg, &[]);
+                    pass.set_bind_group(2, &self.entity_offsets_bind_group, &[]);
+                    pass.set_vertex_buffer(0, vbuf.slice(..byte_len));
+                    pass.draw(0..count, 0..1);
+                }
+            }
+
+            // ── Pass 6: MTSDF text (Labels + ui_char_at, screen-fixed) ───
             if !text_indices.is_empty() {
                 // Buffers were uploaded in the pre-pass section above.
                 let vbyte_len =
