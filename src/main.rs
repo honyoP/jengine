@@ -5,6 +5,7 @@ use std::f32::consts::TAU;
 
 use jengine::ecs::{Entity, World};
 use jengine::ui::{BorderStyle, Label, Padding};
+use jengine::ui::modern::Panel;
 use jengine::ui::widgets::{Dropdown, ToggleSelector, Widget};
 use jengine::engine::{
     AnimationType, Color, jEngine, KeyCode,
@@ -331,6 +332,8 @@ impl Scene for MainMenuScene {
     }
 
     fn update(&mut self, engine: &mut jEngine) -> SceneAction {
+        let sw = engine.grid_width() as f32 * engine.tile_width() as f32;
+        let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
         let items_len = 3;
         let old_selected = self.selected;
 
@@ -346,25 +349,23 @@ impl Scene for MainMenuScene {
         }
 
         // Mouse hover
-        let tw = engine.tile_width() as f32;
-        let th = engine.tile_height() as f32;
-        let sw = engine.grid_width() as f32 * tw;
-        let sh = engine.grid_height() as f32 * th;
-        let panel_w = tw * 24.0;
-        let panel_h = th * 12.0;
+        let panel_w = 350.0;
+        let panel_h = 250.0;
         let bx = (sw - panel_w) * 0.5;
         let by = (sh - panel_h) * 0.5;
         let labels = ["New Game", "Options", "Quit"];
         for (i, _label) in labels.iter().enumerate() {
-            let item_y = by + th * (3.0 + i as f32 * 2.0);
-            let item_x = bx + tw * 2.0;
-            let item_w = panel_w - tw * 4.0;
-            if engine.input.is_mouse_over(item_x, item_y, item_w, th) {
+            let item_y = by + 80.0 + i as f32 * 40.0; // Centered on the row
+            let item_x = bx + 20.0;
+            let item_w = panel_w - 40.0;
+            let item_h = 35.0;
+            
+            if engine.input.is_mouse_over(item_x, item_y, item_w, item_h) {
                 if self.selected != i {
                     self.selected = i;
                     engine.play_sound("UI_selection");
                 }
-                if engine.input.was_clicked(item_x, item_y, item_w, th) && !engine.input.mouse_consumed {
+                if engine.input.was_clicked(item_x, item_y, item_w, item_h) && !engine.input.mouse_consumed {
                     engine.input.mouse_consumed = true;
                     engine.play_sound("UI_click");
                     return self.activate(i, engine);
@@ -382,44 +383,49 @@ impl Scene for MainMenuScene {
     }
 
     fn draw(&mut self, engine: &mut jEngine) {
-        let tw = engine.tile_width() as f32;
-        let th = engine.tile_height() as f32;
-        let sw = engine.grid_width() as f32 * tw;
-        let sh = engine.grid_height() as f32 * th;
+        let sw = engine.grid_width() as f32 * engine.tile_width() as f32;
+        let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
 
         // Full-screen background
         engine.ui.ui_rect(0.0, 0.0, sw, sh, Color([0.03, 0.05, 0.05, 1.0]));
 
-        // Centered 24×12 tile panel
-        let panel_w = tw * 24.0;
-        let panel_h = th * 12.0;
+        // Centered panel
+        let panel_w = 350.0;
+        let panel_h = 250.0;
         let bx = (sw - panel_w) * 0.5;
         let by = (sh - panel_h) * 0.5;
-        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+        
+        Panel::new(bx, by, panel_w, panel_h)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 1.0)
+            .with_radius(12.0)
+            .draw(engine);
 
-        // Title "JENGINE" — rendered at 1.5× tile height to showcase custom font_size.
-        let title = "JENGINE";
-        let big_h  = th * 1.5;
-        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + (th - big_h) * 0.5 + th * 0.25, title, UI_BRIGHT, PANEL_BG, Some(big_h));
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
+        // Title
+        engine.ui.ui_text(bx + panel_w * 0.5 - 60.0, by + 20.0, "JENGINE", UI_BRIGHT, Color::TRANSPARENT, Some(32.0));
+        engine.ui.ui_hline(bx + 20.0, by + 65.0, panel_w - 40.0, 1.0, PANEL_BORDER);
 
         // Menu items
         let labels = ["New Game", "Options", "Quit"];
         for (i, label) in labels.iter().enumerate() {
-            let item_y = by + th * (3.0 + i as f32 * 2.0);
-            let item_x = bx + tw * 2.0;
             let is_sel = i == self.selected;
-            let bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
+            let item_y = by + 90.0 + i as f32 * 40.0;
+            let item_x = bx + 40.0;
+            
+            if is_sel {
+                Panel::new(bx + 20.0, item_y - 10.0, panel_w - 40.0, 35.0)
+                    .with_color(Color([0.1, 0.2, 0.2, 0.5]))
+                    .with_radius(6.0)
+                    .draw(engine);
+            }
+
             let fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
             let prefix = if is_sel { "> " } else { "  " };
-            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg, None);
+            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, Color::TRANSPARENT, Some(18.0));
         }
 
         // Footer hint
-        let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select ", UI_DIM, PANEL_BG, None);
+        engine.ui.ui_text(bx + 40.0, by + panel_h - 30.0, "[↑↓] Navigate  [Enter] Select", UI_DIM, Color::TRANSPARENT, Some(12.0));
     }
 }
 
@@ -467,33 +473,35 @@ impl Scene for OptionsScene {
     }
 
     fn draw(&mut self, engine: &mut jEngine) {
-        let tw = engine.tile_width() as f32;
-        let th = engine.tile_height() as f32;
-        let sw = engine.grid_width() as f32 * tw;
-        let sh = engine.grid_height() as f32 * th;
+        let sw = engine.grid_width() as f32 * engine.tile_width() as f32;
+        let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
 
         // Full-screen opaque background
         engine.ui.ui_rect(0.0, 0.0, sw, sh, Color([0.03, 0.05, 0.05, 1.0]));
 
-        // 32×16 tile panel
-        let panel_w = tw * 32.0;
-        let panel_h = th * 16.0;
+        // 32×16 tile panel equivalent
+        let panel_w = 500.0;
+        let panel_h = 400.0;
         let bx = (sw - panel_w) * 0.5;
         let by = (sh - panel_h) * 0.5;
-        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+        
+        Panel::new(bx, by, panel_w, panel_h)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 1.0)
+            .with_radius(12.0)
+            .draw(engine);
 
         let title = " OPTIONS ";
-        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
+        engine.ui.ui_text(bx + panel_w * 0.5 - 40.0, by + 20.0, title, UI_BRIGHT, Color::TRANSPARENT, Some(24.0));
+        engine.ui.ui_hline(bx + 20.0, by + 55.0, panel_w - 40.0, 1.0, PANEL_BORDER);
 
-        let col_x  = bx + tw * 2.0;
-        let ctrl_x = bx + tw * 14.0;
-        let ctrl_w = panel_w - tw * 16.0;
+        let col_x  = bx + 40.0;
+        let ctrl_x = bx + 200.0;
+        let ctrl_w = panel_w - 240.0;
 
         // Row 0 — Resolution dropdown
-        engine.ui.ui_text(col_x, by + th * 3.5, "Resolution", UI_TEXT, PANEL_BG, None);
-        if let Some(_idx) = self.dd_resolution.draw(engine, ctrl_x, by + th * 3.5, ctrl_w) {
+        engine.ui.ui_text(col_x, by + 85.0, "Resolution", UI_TEXT, Color::TRANSPARENT, Some(16.0));
+        if let Some(_idx) = self.dd_resolution.draw(engine, ctrl_x, by + 80.0, ctrl_w) {
             engine.play_sound("UI_click");
             let resolutions = ["1280×720", "1920×1080", "2560×1440", "3840×2160"];
             let (pw, ph) = match self.dd_resolution.selected {
@@ -512,8 +520,8 @@ impl Scene for OptionsScene {
         }
 
         // Row 1 — Window mode toggle
-        engine.ui.ui_text(col_x, by + th * 6.0, "Window Mode", UI_TEXT, PANEL_BG, None);
-        if let Some(idx) = self.ts_window_mode.draw(engine, ctrl_x, by + th * 6.0, ctrl_w) {
+        engine.ui.ui_text(col_x, by + 135.0, "Window Mode", UI_TEXT, Color::TRANSPARENT, Some(16.0));
+        if let Some(idx) = self.ts_window_mode.draw(engine, ctrl_x, by + 130.0, ctrl_w) {
             engine.play_sound("UI_selection");
             self.window_config.mode = match idx {
                 0 => WindowMode::Windowed,
@@ -526,25 +534,29 @@ impl Scene for OptionsScene {
 
         // Back button
         let btn_label = "[ Back ]";
-        let btn_w = btn_label.chars().count() as f32 * tw;
+        let btn_w = 100.0;
         let btn_x = bx + (panel_w - btn_w) * 0.5;
-        let btn_y = by + panel_h - th * 2.5;
-        let hov = engine.input.is_mouse_over(btn_x, btn_y, btn_w, th);
+        let btn_y = by + panel_h - 60.0;
+        let hov = engine.input.is_mouse_over(btn_x, btn_y, btn_w, 30.0);
+        
+        if hov {
+            Panel::new(btn_x, btn_y, btn_w, 30.0)
+                .with_color(Color([1.0, 1.0, 1.0, 0.1]))
+                .with_radius(4.0)
+                .draw(engine);
+        }
+        
         let fg = if hov { UI_BRIGHT } else { UI_TEXT };
-        engine.ui.ui_text(btn_x, btn_y, btn_label, fg, PANEL_BG, None);
-        if engine.input.was_clicked(btn_x, btn_y, btn_w, th) && !engine.input.mouse_consumed {
+        engine.ui.ui_text(btn_x + 20.0, btn_y + 5.0, btn_label, fg, Color::TRANSPARENT, Some(18.0));
+        
+        if engine.input.was_clicked(btn_x, btn_y, btn_w, 30.0) && !engine.input.mouse_consumed {
             engine.input.mouse_consumed = true;
-            // We can't return an action from draw, so the Back button sets a flag
-            // that update() checks. Instead, handle via Escape in update().
-            // For mouse click, we close by emitting a synthetic escape next frame—
-            // but we can't do that cleanly here. Instead, update() handles Esc.
-            // For the demo, both Esc and the button close the panel.
+            // Handle back via synched escape or just pop? Update scene stack is needed.
+            // But this is draw, update handles pop.
         }
 
         // Footer hint
-        let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [Esc] Back ", UI_DIM, PANEL_BG, None);
+        engine.ui.ui_text(bx + 40.0, by + panel_h - 30.0, " [Esc] Back ", UI_DIM, Color::TRANSPARENT, Some(12.0));
     }
 }
 
@@ -756,76 +768,63 @@ impl GameScene {
 
     fn draw_hud_top(&mut self, engine: &mut jEngine) {
         let sw = self.window_config.physical_width as f32;
-        let tw = engine.tile_width()  as f32;
         let th = engine.tile_height() as f32;
 
-        engine.ui.ui_rect(0.0, 0.0, sw, th, PANEL_BG);
+        // Top bar container
+        Panel::new(0.0, 0.0, sw, th * 2.5)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 0.5)
+            .draw(engine);
 
-        engine.ui.ui_rect(0.0, th, sw, th, PANEL_BG);
+        // HP Bar
         let hp_pct = (self.ui.player_hp / self.ui.player_max_hp).clamp(0.0, 1.0);
-        engine.ui.ui_progress_bar(0.0, th, sw - tw * 3.0, th, hp_pct, HP_FILL, HP_EMPTY);
-        engine.ui.ui_text(0.0, th,
-            &format!("HP: {:.0} / {:.0}", self.ui.player_hp, self.ui.player_max_hp),
-            Color::WHITE, Color::TRANSPARENT, None);
-        let icon_x = sw - (2.0 * tw) * 3.0;
-        engine.ui.ui_rect(icon_x, th, tw * 3.0, th, PANEL_BG);
+        let bar_w = sw * 0.4;
+        Panel::new(10.0, 10.0, bar_w, 20.0).with_color(HP_EMPTY).with_radius(10.0).draw(engine);
+        Panel::new(10.0, 10.0, bar_w * hp_pct, 20.0).with_color(HP_FILL).with_radius(10.0).draw(engine);
+        engine.ui.ui_text(20.0, 12.0, &format!("HP: {:.0}/{:.0}", self.ui.player_hp, self.ui.player_max_hp), Color::WHITE, Color::TRANSPARENT, Some(14.0));
+
+        // XP Bar
+        let xp_pct = (self.ui.player_xp / self.ui.player_max_xp).clamp(0.0, 1.0);
+        Panel::new(10.0, 35.0, bar_w, 10.0).with_color(XP_EMPTY).with_radius(5.0).draw(engine);
+        Panel::new(10.0, 35.0, bar_w * xp_pct, 10.0).with_color(XP_FILL).with_radius(5.0).draw(engine);
+        engine.ui.ui_text(20.0, 48.0, "LVL 1", Color::WHITE, Color::TRANSPARENT, Some(10.0));
+
+        // Icons
         let inv_color = if self.ui.inventory_open { UI_BRIGHT } else { UI_DIM };
         let log_color = if self.ui.log_open       { UI_BRIGHT } else { UI_DIM };
-        engine.ui.ui_text(icon_x,          th, "[i]", inv_color, Color::TRANSPARENT, None);
-        engine.ui.ui_text(icon_x + (2.0 + tw) * 2.0, th, "[l]", log_color, Color::TRANSPARENT, None);
-
-        engine.ui.ui_rect(0.0, th * 2.0, sw, th, PANEL_BG);
-        let xp_pct = (self.ui.player_xp / self.ui.player_max_xp).clamp(0.0, 1.0);
-        engine.ui.ui_progress_bar(0.0, th * 2.0, sw - tw * 3.0, th, xp_pct, XP_FILL, XP_EMPTY);
-        engine.ui.ui_text(0.0, th * 2.0,
-            &format!("LVL: 1   EXP: {:.0} / {:.0}", self.ui.player_xp, self.ui.player_max_xp),
-            Color::WHITE, Color::TRANSPARENT, None);
-        engine.ui.ui_rect(icon_x, th * 2.0, tw * 3.0, th, PANEL_BG);
+        engine.ui.ui_text(sw - 120.0, 15.0, "[i] Inventory", inv_color, Color::TRANSPARENT, Some(14.0));
+        engine.ui.ui_text(sw - 240.0, 15.0, "[l] Messages", log_color, Color::TRANSPARENT, Some(14.0));
     }
 
     fn draw_hud_bottom(&mut self, engine: &mut jEngine) {
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
         let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
-        let tw = engine.tile_width()  as f32;
-        let th = engine.tile_height() as f32;
 
-        let y0 = sh - th * 3.0;
-        let y1 = sh - th * 2.0;
-        let y2 = sh - th;
+        let hud_h = 80.0;
+        let y = sh - hud_h;
 
-        let p1w = sw / 3.0;
-        let p2w = sw / 3.0;
-        let p3w = sw - p1w - p2w;
+        Panel::new(0.0, y, sw, hud_h)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 0.5)
+            .draw(engine);
 
-        engine.ui.ui_rect(0.0,        y0, p1w, th, PANEL_BG);
-        engine.ui.ui_rect(p1w,        y0, p2w, th, Color([0.04, 0.08, 0.08, 1.0]));
-        engine.ui.ui_rect(p1w + p2w,  y0, p3w, th, PANEL_BG);
-        engine.ui.ui_vline(p1w,       y0, th,  1.0, PANEL_BORDER);
-        engine.ui.ui_vline(p1w + p2w, y0, th,  1.0, PANEL_BORDER);
+        engine.ui.ui_text(20.0, y + 10.0, "ACTIVE EFFECTS:", UI_DIM, Color::TRANSPARENT, Some(12.0));
+        engine.ui.ui_text(140.0, y + 10.0, "[burning]", UI_RED, Color::TRANSPARENT, Some(12.0));
+        
+        let actions = "[f] attack  [r] parry  [w] dodge";
+        engine.ui.ui_text(sw - 300.0, y + 10.0, actions, UI_TEXT, Color::TRANSPARENT, Some(14.0));
 
-        engine.ui.ui_text(tw * 0.5,         y0, "ACTIVE EFFECTS:", UI_DIM, Color::TRANSPARENT, None);
-        engine.ui.ui_text(tw * 10.5,        y0, "[burning]", UI_RED, Color::TRANSPARENT, None);
-        engine.ui.ui_text(tw * 19.5,        y0, "[haste]", UI_ACCENT, Color::TRANSPARENT, None);
-        engine.ui.ui_text(p1w + tw * 0.5,   y0, "TARGET:", UI_DIM, Color::TRANSPARENT, None);
-        engine.ui.ui_text(p1w + tw * 8.0,   y0, "Small Enemy", UI_TEXT, Color::TRANSPARENT, None);
-        engine.ui.ui_text(p1w + tw * 20.0,  y0, "[Hostile]", UI_RED, Color::TRANSPARENT, None);
-        engine.ui.ui_text(p1w+p2w + tw*0.5, y0, "[f] attack  [r] parry  [w] dodge", UI_TEXT, Color::TRANSPARENT, None);
-
-        engine.ui.ui_rect(0.0, y1, sw, th, PANEL_BG);
-        engine.ui.ui_hline(0.0, y1, sw, 1.0, PANEL_BORDER);
-        engine.ui.ui_text(0.0, y1, "ABILITIES:", UI_DIM, Color::TRANSPARENT, None);
-
-        engine.ui.ui_rect(0.0, y2, sw, th, PANEL_BG);
-        let skills = ["[1] Strike", "[2] Dash", "[3] Heal", "[4] Block", "[5] Roll"];
-        let slot_w = sw / skills.len() as f32;
+        // Ability Slots
+        let skills = ["Strike", "Dash", "Heal", "Block", "Roll"];
+        let slot_w = 100.0;
         for (i, s) in skills.iter().enumerate() {
-            let sx = i as f32 * slot_w;
-            engine.ui.ui_rect(sx + 1.0, y2 + 1.0, slot_w - 2.0, th - 2.0,
-                Color([0.08, 0.12, 0.12, 1.0]));
-            engine.ui.ui_text(sx + tw * 0.5, y2, s, UI_TEXT, Color::TRANSPARENT, None);
-            if i + 1 < skills.len() {
-                engine.ui.ui_vline(sx + slot_w, y2, th, 1.0, PANEL_BORDER);
-            }
+            let sx = 20.0 + i as f32 * (slot_w + 10.0);
+            Panel::new(sx, y + 35.0, slot_w, 35.0)
+                .with_color(Color([0.08, 0.12, 0.12, 1.0]))
+                .with_border(PANEL_BORDER, 1.0)
+                .with_radius(6.0)
+                .draw(engine);
+            engine.ui.ui_text(sx + 10.0, y + 45.0, &format!("[{}] {}", i+1, s), UI_TEXT, Color::TRANSPARENT, Some(14.0));
         }
     }
 
@@ -834,39 +833,29 @@ impl GameScene {
 
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
         let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
-        let tw = engine.tile_width()  as f32;
-        let th = engine.tile_height() as f32;
 
-        let panel_w   = tw * 18.0;
-        let panel_x   = sw - panel_w;
-        let panel_y   = th * 3.0;
-        let panel_h   = sh - th * 6.0;
-        let inner_x   = panel_x + tw;
-        let inner_y   = panel_y + th;
-        let inner_w   = panel_w - tw * 2.0;
-        let inner_h   = panel_h - th * 2.0;
+        let panel_w   = 250.0;
+        let panel_x   = sw - panel_w - 10.0;
+        let panel_y   = 80.0;
+        let panel_h   = sh - 180.0;
         
-        let log_font_size = 12.0;
+        Panel::new(panel_x, panel_y, panel_w, panel_h)
+            .with_color(LOG_BG)
+            .with_border(PANEL_BORDER, 1.0)
+            .with_radius(8.0)
+            .draw(engine);
 
-        engine.ui.ui_box(panel_x, panel_y, panel_w, panel_h, BorderStyle::Thin, PANEL_BORDER, LOG_BG);
-        engine.ui.ui_text(panel_x + tw * 2.0, panel_y, " MESSAGE LOG ", UI_BRIGHT, LOG_BG, None);
+        engine.ui.ui_text(panel_x + 20.0, panel_y + 10.0, "MESSAGE LOG", UI_BRIGHT, Color::TRANSPARENT, Some(14.0));
 
-        // Render messages from newest to oldest, filling from the bottom up.
-        let mut current_y = inner_y + inner_h - log_font_size;
+        let log_fs = 12.0;
+        let mut current_y = panel_y + panel_h - 25.0;
         
         for entry in self.ui.log_messages.iter().rev() {
-            // Calculate how many lines this message needs.
-            // When using an explicit font size, ui_text_wrapped uses proportional width.
-            // For simplicity in calculation, we'll use the average character width or a safe margin.
-            let lines = jengine::ui::word_wrap(&entry.text, (inner_w / (log_font_size * 0.6)) as usize);
-            let msg_h = lines.len() as f32 * log_font_size;
-            
-            if current_y - msg_h < inner_y {
-                break; // Panel is full
-            }
-            
-            engine.ui.ui_text_wrapped(inner_x, current_y - msg_h + log_font_size, inner_w, msg_h, &entry.text, entry.color, Color::TRANSPARENT, Some(log_font_size));
-            current_y -= msg_h + (log_font_size * 0.2); // Add a small gap between messages
+            let lines = jengine::ui::word_wrap(&entry.text, ( (panel_w - 40.0) / (log_fs * 0.6)) as usize);
+            let msg_h = lines.len() as f32 * log_fs;
+            if current_y - msg_h < panel_y + 35.0 { break; }
+            engine.ui.ui_text_wrapped(panel_x + 20.0, current_y - msg_h + log_fs, panel_w - 40.0, msg_h, &entry.text, entry.color, Color::TRANSPARENT, Some(log_fs));
+            current_y -= msg_h + 5.0;
         }
     }
 
@@ -875,34 +864,39 @@ impl GameScene {
 
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
         let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
-        let tw = engine.tile_width()  as f32;
-        let th = engine.tile_height() as f32;
 
-        let bx = tw;
-        let by = th;
-        let bw = sw - tw * 2.0;
-        let bh = sh - th * 2.0;
+        let bw = sw - 100.0;
+        let bh = sh - 150.0;
+        let bx = 50.0;
+        let by = 75.0;
 
-        engine.ui.ui_box(bx, by, bw, bh, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+        Panel::new(bx, by, bw, bh)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 1.0)
+            .with_radius(12.0)
+            .draw(engine);
 
-        let tabs = [(Tab::Inventory, " Inventory "),
-                    (Tab::SkillTree, " Skill Tree "),
-                    (Tab::Relationship, " Relationship ")];
-        let mut tab_x = bx + tw * 2.0;
+        let tabs = [(Tab::Inventory, "Inventory"),
+                    (Tab::SkillTree, "Skill Tree"),
+                    (Tab::Relationship, "Relationship")];
+        let mut tab_x = bx + 30.0;
         for (tab, label) in &tabs {
             let is_active = self.ui.active_tab == *tab;
             let fg = if is_active { UI_BRIGHT } else { UI_DIM };
-            let bg = if is_active { Color([0.10, 0.15, 0.14, 1.0]) } else { PANEL_BG };
-            let w  = label.chars().count() as f32 * tw;
-            engine.ui.ui_rect(tab_x, by, w, th, bg);
-            engine.ui.ui_text(tab_x, by, label, fg, bg, None);
-            tab_x += w + tw;
+            if is_active {
+                Panel::new(tab_x - 10.0, by + 10.0, (label.len() as f32 * 10.0) + 20.0, 25.0)
+                    .with_color(Color([0.1, 0.2, 0.2, 0.5]))
+                    .with_radius(4.0)
+                    .draw(engine);
+            }
+            engine.ui.ui_text(tab_x, by + 15.0, label, fg, Color::TRANSPARENT, Some(14.0));
+            tab_x += (label.len() as f32 * 10.0) + 40.0;
         }
 
-        let inner_x = bx + tw;
-        let inner_y = by + th * 2.0;
-        let inner_w = bw - tw * 2.0;
-        let inner_h = bh - th * 3.0;
+        let inner_x = bx + 30.0;
+        let inner_y = by + 60.0;
+        let inner_w = bw - 60.0;
+        let inner_h = bh - 100.0;
 
         match self.ui.active_tab {
             Tab::Inventory => self.draw_inventory_content(engine, inner_x, inner_y, inner_w, inner_h),
@@ -910,10 +904,7 @@ impl GameScene {
             Tab::Relationship => self.draw_relationship_content(engine, inner_x, inner_y, inner_w, inner_h),
         }
 
-        let footer_y = by + bh - th;
-        engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, 1.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y,
-            " [Tab] Switch  [Esc] Close ", UI_DIM, Color::TRANSPARENT, None);
+        engine.ui.ui_text(bx + 30.0, by + bh - 30.0, "[Tab] Switch  [Esc] Close", UI_DIM, Color::TRANSPARENT, Some(12.0));
     }
 
     fn draw_inventory_content(&mut self, engine: &mut jEngine,
@@ -1037,48 +1028,48 @@ impl GameScene {
 
         let sw = engine.grid_width()  as f32 * engine.tile_width()  as f32;
         let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
-        let tw = engine.tile_width()  as f32;
-        let th = engine.tile_height() as f32;
 
-        let bw = tw * 36.0;
-        let bh = th * 18.0;
+        let bw = 600.0;
+        let bh = 400.0;
         let bx = (sw - bw) * 0.5;
         let by = (sh - bh) * 0.5;
 
-        engine.ui.ui_box(bx, by, bw, bh, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+        Panel::new(bx, by, bw, bh)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 1.0)
+            .with_radius(12.0)
+            .draw(engine);
 
-        let name = dialogue.npc_name.clone();
-        let name_x = bx + (bw - name.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(name_x, by + th * 1.5, &name, UI_BRIGHT, Color::TRANSPARENT, None);
-        engine.ui.ui_hline(bx + tw, by + th * 2.5, bw - tw * 2.0, 1.0, PANEL_BORDER);
+        engine.ui.ui_text(bx + 30.0, by + 20.0, &dialogue.npc_name, UI_BRIGHT, Color::TRANSPARENT, Some(18.0));
+        engine.ui.ui_hline(bx + 20.0, by + 50.0, bw - 40.0, 1.0, PANEL_BORDER);
 
         engine.ui.ui_text_wrapped(
-            bx + tw * 2.0, by + th * 3.0,
-            bw - tw * 4.0, th * 4.0,
+            bx + 30.0, by + 70.0,
+            bw - 60.0, 100.0,
             &dialogue.body,
-            UI_TEXT, Color::TRANSPARENT, None
+            UI_TEXT, Color::TRANSPARENT, Some(14.0)
         );
-
-        engine.ui.ui_hline(bx + tw, by + th * 7.0, bw - tw * 2.0, 1.0, UI_DIM);
 
         let selected = dialogue.selected;
         for (i, opt) in dialogue.options.iter().enumerate() {
-            let oy = by + th * (8.0 + i as f32 * 1.5);
-            if oy + th > by + bh - th * 2.0 { break; }
+            let oy = by + 180.0 + i as f32 * 35.0;
             let is_sel = i == selected;
-            let row_bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
+            
+            if is_sel {
+                Panel::new(bx + 20.0, oy - 5.0, bw - 40.0, 30.0)
+                    .with_color(Color([0.1, 0.2, 0.2, 0.5]))
+                    .with_radius(4.0)
+                    .draw(engine);
+            }
+
             let row_fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
             let prefix = if is_sel { "> " } else { "  " };
-            engine.ui.ui_text(bx + tw, oy,
+            engine.ui.ui_text(bx + 30.0, oy,
                 &format!("{prefix}[{}] {opt}", i + 1),
-                row_fg, row_bg, None);
+                row_fg, Color::TRANSPARENT, Some(14.0));
         }
 
-        let footer_y = by + bh - th;
-        engine.ui.ui_hline(bx + tw, footer_y, bw - tw * 2.0, 1.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y,
-            " [↑/↓] Navigate  [Enter] Select  [Esc] Cancel ",
-            UI_DIM, Color::TRANSPARENT, None);
+        engine.ui.ui_text(bx + 30.0, by + bh - 30.0, " [↑/↓] Navigate  [Enter] Select  [Esc] Cancel ", UI_DIM, Color::TRANSPARENT, Some(12.0));
     }
 }
 
@@ -1486,8 +1477,11 @@ impl Scene for GameScene {
         self.draw_hud_top(engine);
         self.draw_hud_bottom(engine);
         self.draw_log_panel(engine);
+        
+        engine.ui.push_layer(jengine::ui::UILayer::Modal);
         self.draw_inventory_modal(engine);
         self.draw_dialogue_modal(engine);
+        engine.ui.pop_layer();
     }
 
     fn debug_render(&mut self, engine: &mut jEngine) -> Option<Box<dyn jengine::ui::widgets::Widget>> {
@@ -1538,7 +1532,7 @@ impl Scene for GameScene {
                 popup = popup.add(TextWidget {
                     text: format!("E{}: {}", entity.id(), comps.join(", ")),
                     size: Some(fs),
-                    color: Color::WHITE,
+                    color: Some(Color::WHITE),
                 });
             }
             Widget::draw(&mut popup, engine, h_x, h_y, panel_w, None);
@@ -1551,13 +1545,13 @@ impl Scene for GameScene {
         stack = stack.add(TextWidget {
             text: format!("Entities (Total): {}", total_entities),
             size: Some(fs),
-            color: Color::DARK_GRAY,
+            color: Some(Color::DARK_GRAY),
         });
 
         stack = stack.add(TextWidget {
             text: "--- WORLD LIST ---".to_string(),
             size: Some(fs),
-            color: Color::DARK_GRAY,
+            color: Some(Color::DARK_GRAY),
         });
 
         // Increase fetch limit to 100 to ensure we have enough content to scroll
@@ -1570,7 +1564,7 @@ impl Scene for GameScene {
             stack = stack.add(TextWidget {
                 text: format!("E{}: {}", entity.id(), short_comps.join(", ")),
                 size: Some(fs),
-                color: Color::DARK_BLUE,
+                color: Some(Color::DARK_BLUE),
             });
         }
         
@@ -1578,7 +1572,7 @@ impl Scene for GameScene {
             stack = stack.add(TextWidget {
                 text: "... and more".to_string(),
                 size: Some(fs),
-                color: Color([0.4, 0.4, 0.4, 1.0]),
+                color: Some(Color([0.4, 0.4, 0.4, 1.0])),
             });
         }
 
@@ -1673,43 +1667,49 @@ impl Scene for PauseOverlayScene {
     }
 
     fn draw(&mut self, engine: &mut jEngine) {
-        let tw = engine.tile_width() as f32;
-        let th = engine.tile_height() as f32;
-        let sw = engine.grid_width() as f32 * tw;
-        let sh = engine.grid_height() as f32 * th;
+        let sw = engine.grid_width() as f32 * engine.tile_width() as f32;
+        let sh = engine.grid_height() as f32 * engine.tile_height() as f32;
 
         // Semi-transparent dark overlay
         engine.ui.ui_rect(0.0, 0.0, sw, sh, Color([0.0, 0.0, 0.0, 0.55]));
 
-        // Centered 24×14 panel
-        let panel_w = tw * 24.0;
-        let panel_h = th * 14.0;
+        // Centered panel
+        let panel_w = 350.0;
+        let panel_h = 300.0;
         let bx = (sw - panel_w) * 0.5;
         let by = (sh - panel_h) * 0.5;
-        engine.ui.ui_box(bx, by, panel_w, panel_h, BorderStyle::Double, PANEL_BORDER, PANEL_BG);
+        
+        Panel::new(bx, by, panel_w, panel_h)
+            .with_color(PANEL_BG)
+            .with_border(PANEL_BORDER, 1.0)
+            .with_radius(12.0)
+            .draw(engine);
 
-        // Title "PAUSED"
-        let title = "PAUSED";
-        let title_x = bx + (panel_w - title.chars().count() as f32 * tw) * 0.5;
-        engine.ui.ui_text(title_x, by + th, title, UI_BRIGHT, PANEL_BG, None);
-        engine.ui.ui_hline(bx + tw, by + th * 2.0, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
+        // Title
+        engine.ui.ui_text(bx + panel_w * 0.5 - 40.0, by + 20.0, "PAUSED", UI_BRIGHT, Color::TRANSPARENT, Some(24.0));
+        engine.ui.ui_hline(bx + 20.0, by + 55.0, panel_w - 40.0, 1.0, PANEL_BORDER);
 
         // Menu items
         let labels = ["Resume", "Options", "Quit to Menu", "Quit App"];
         for (i, label) in labels.iter().enumerate() {
-            let item_y = by + th * (4.0 + i as f32 * 2.0);
-            let item_x = bx + tw * 2.0;
             let is_sel = i == self.selected;
-            let bg = if is_sel { Color([0.10, 0.18, 0.16, 1.0]) } else { Color::TRANSPARENT };
+            let item_y = by + 80.0 + i as f32 * 40.0;
+            let item_x = bx + 40.0;
+            
+            if is_sel {
+                Panel::new(bx + 20.0, item_y - 10.0, panel_w - 40.0, 35.0)
+                    .with_color(Color([0.1, 0.2, 0.2, 0.5]))
+                    .with_radius(6.0)
+                    .draw(engine);
+            }
+
             let fg = if is_sel { UI_BRIGHT } else { UI_TEXT };
             let prefix = if is_sel { "> " } else { "  " };
-            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, bg, None);
+            engine.ui.ui_text(item_x, item_y, &format!("{prefix}{label}"), fg, Color::TRANSPARENT, Some(18.0));
         }
 
         // Footer hint
-        let footer_y = by + panel_h - th;
-        engine.ui.ui_hline(bx + tw, footer_y, panel_w - tw * 2.0, 1.0, PANEL_BORDER);
-        engine.ui.ui_text(bx + tw * 2.0, footer_y, " [↑↓] Navigate  [Enter] Select  [Esc] Resume ", UI_DIM, PANEL_BG, None);
+        engine.ui.ui_text(bx + 40.0, by + panel_h - 30.0, "[↑↓] Navigate  [Enter] Select", UI_DIM, Color::TRANSPARENT, Some(12.0));
     }
 }
 

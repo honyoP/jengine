@@ -1,7 +1,7 @@
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TileVertex {
-    pub position: [f32; 2],
+    pub position: [f32; 3],
     pub uv: [f32; 2],
     pub fg_color: [f32; 4],
     pub bg_color: [f32; 4],
@@ -14,7 +14,7 @@ pub struct TileVertex {
 
 impl TileVertex {
     const ATTRIBS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-        0 => Float32x2,  // position
+        0 => Float32x3,  // position (x, y, z)
         1 => Float32x2,  // uv
         2 => Float32x4,  // fg_color
         3 => Float32x4,  // bg_color
@@ -133,7 +133,13 @@ pub fn create_tile_pipeline(
             topology: wgpu::PrimitiveTopology::TriangleList,
             ..Default::default()
         },
-        depth_stencil: None,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,

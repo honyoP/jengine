@@ -19,6 +19,7 @@
 use jengine::ecs::World;
 use jengine::engine::{Color, Game, jEngine, KeyCode};
 use jengine::renderer::text::Font;
+use jengine::ui::modern::Panel;
 use jengine::{DEFAULT_FONT_METADATA, DEFAULT_TILE_H, DEFAULT_TILE_W, DEFAULT_TILESET};
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -232,19 +233,17 @@ impl Game for EcsDemo {
 
         // ── UI overlay (always drawn on top of the world) ─────────────────────
         let count = self.world.query::<Position>().count();
-        let tw = engine.tile_width() as f32;
-        let th = engine.tile_height() as f32;
-        let sw = gw as f32 * tw;
+        let sw = gw as f32 * engine.tile_width() as f32;
 
-        engine.ui.ui_rect(0.0, 0.0, sw, th, Color([0.0, 0.0, 0.0, 0.85]));
+        Panel::new(0.0, 0.0, sw, 30.0).with_color(Color([0.0, 0.0, 0.0, 0.85])).draw(engine);
         engine.ui.ui_text(
-            tw,
-            0.0,
+            20.0,
+            8.0,
             &format!(
                 "Entities: {count:<3}  |  [Space] spawn  [D] damage all  [Esc] quit"
             ),
             Color::WHITE,
-            Color::TRANSPARENT, None);
+            Color::TRANSPARENT, Some(14.0));
     }
 }
 

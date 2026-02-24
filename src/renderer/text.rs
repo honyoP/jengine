@@ -14,8 +14,8 @@ pub type Vec2 = [f32; 2];
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    /// Screen-space position in pixels.
-    pub position: [f32; 2],
+    /// Screen-space position in pixels (x, y, depth).
+    pub position: [f32; 3],
     /// Normalised atlas texture coordinates in `[0, 1]`.
     pub tex_coords: [f32; 2],
     /// RGBA tint for this vertex.
@@ -24,7 +24,7 @@ pub struct Vertex {
 
 impl Vertex {
     const ATTRIBS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-        0 => Float32x2,  // position
+        0 => Float32x3,  // position (x, y, z)
         1 => Float32x2,  // tex_coords
         2 => Float32x4,  // color
     ];
@@ -277,10 +277,10 @@ pub fn append_text_mesh_at_baseline(
             );
             let base = vertices.len() as u16;
 
-            vertices.push(Vertex { position: [x0, y0], tex_coords: [u0, v0], color });
-            vertices.push(Vertex { position: [x1, y0], tex_coords: [u1, v0], color });
-            vertices.push(Vertex { position: [x0, y1], tex_coords: [u0, v1], color });
-            vertices.push(Vertex { position: [x1, y1], tex_coords: [u1, v1], color });
+            vertices.push(Vertex { position: [x0, y0, 0.1], tex_coords: [u0, v0], color });
+            vertices.push(Vertex { position: [x1, y0, 0.1], tex_coords: [u1, v0], color });
+            vertices.push(Vertex { position: [x0, y1, 0.1], tex_coords: [u0, v1], color });
+            vertices.push(Vertex { position: [x1, y1, 0.1], tex_coords: [u1, v1], color });
 
             indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
         }

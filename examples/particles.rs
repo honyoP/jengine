@@ -381,7 +381,7 @@ impl Game for ParticleDemo {
                 popup = popup.add(TextWidget {
                     text: format!("E{}: {}", entity.id(), comps.join(", ")),
                     size: Some(fs),
-                    color: Color::WHITE,
+                    color: Some(Color::WHITE),
                 });
             }
             Widget::draw(&mut popup, engine, h_x, h_y, panel_w, None);
@@ -394,13 +394,13 @@ impl Game for ParticleDemo {
         stack = stack.add(TextWidget {
             text: format!("Entities (Total): {}", total_entities),
             size: Some(fs),
-            color: Color::DARK_GRAY,
+            color: Some(Color::DARK_GRAY),
         });
 
         stack = stack.add(TextWidget {
             text: "--- ENTITY LIST ---".to_string(),
             size: Some(fs),
-            color: Color::CYAN,
+            color: Some(Color::CYAN),
         });
 
         // Fetch first 100 entities to ensure we have enough content to scroll
@@ -413,7 +413,7 @@ impl Game for ParticleDemo {
             stack = stack.add(TextWidget {
                 text: format!("E{}: {}", entity.id(), short_comps.join(", ")),
                 size: Some(fs),
-                color: Color::BLACK,
+                color: Some(Color::BLACK),
             });
         }
 
@@ -421,7 +421,7 @@ impl Game for ParticleDemo {
             stack = stack.add(TextWidget {
                 text: "... and more".to_string(),
                 size: Some(fs),
-                color: Color([0.4, 0.4, 0.4, 1.0]),
+                color: Some(Color([0.4, 0.4, 0.4, 1.0])),
             });
         }
 

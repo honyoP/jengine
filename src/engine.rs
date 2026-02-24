@@ -214,6 +214,10 @@ pub struct jEngine {
     /// Visual offsets for each entity, uploaded to the GPU as a storage buffer.
     /// We use [f32; 4] to ensure 16-byte alignment required by many GPUs for storage arrays.
     entity_offsets: Vec<[f32; 4]>,
+    /// True when entity_offsets contain data that has not yet been uploaded to the GPU.
+    /// Stays true for one extra frame after the last animation ends to push the final
+    /// zeroed values, then goes false until the next animation starts.
+    entity_offsets_dirty: bool,
     /// 2D camera — tracks position, zoom, and shake.
     pub(crate) camera: Camera,
     dt: f32,
@@ -262,6 +266,7 @@ impl jEngine {
             particle_vertices: Vec::new(),
             active_animations: Vec::new(),
             entity_offsets: vec![[0.0, 0.0, 0.0, 0.0]; MAX_ANIMATED_ENTITIES],
+            entity_offsets_dirty: false,
             camera,
             dt: 0.0,
             tick: 0,
@@ -470,10 +475,10 @@ impl jEngine {
     pub fn draw_particle(&mut self, x: f32, y: f32, color: Color, size: f32) {
         let h = size * 0.5;
         let c = color.0;
-        let tl = ParticleVertex { position: [x - h, y - h], color: c };
-        let tr = ParticleVertex { position: [x + h, y - h], color: c };
-        let bl = ParticleVertex { position: [x - h, y + h], color: c };
-        let br = ParticleVertex { position: [x + h, y + h], color: c };
+        let tl = ParticleVertex { position: [x - h, y - h, 0.9], color: c };
+        let tr = ParticleVertex { position: [x + h, y - h, 0.9], color: c };
+        let bl = ParticleVertex { position: [x - h, y + h, 0.9], color: c };
+        let br = ParticleVertex { position: [x + h, y + h, 0.9], color: c };
         self.particle_vertices.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
     }
 
@@ -498,11 +503,16 @@ impl jEngine {
             elapsed: 0.0,
             duration,
         });
+        self.entity_offsets_dirty = true;
     }
 
     /// Advance all active animations and camera state by `dt` seconds.
     pub(crate) fn tick_animations(&mut self, dt: f32) {
-        // Reset offsets for entities that were animating but finished
+        let had_active = !self.active_animations.is_empty();
+
+        // Zero out offsets before advancing time. Entities whose animations expire
+        // this tick will have their offsets zeroed here and won't be re-written below
+        // (since retain removes them), ensuring the GPU sees zeros on the next upload.
         for a in &self.active_animations {
             if (a.entity_id as usize) < self.entity_offsets.len() {
                 self.entity_offsets[a.entity_id as usize] = [0.0, 0.0, 0.0, 0.0];
@@ -513,13 +523,19 @@ impl jEngine {
             a.elapsed += dt;
         }
         self.active_animations.retain(|a| a.elapsed < a.duration);
-        
-        // Update current offsets
+
+        // Write non-zero offsets for still-active animations.
         for a in &self.active_animations {
             if (a.entity_id as usize) < self.entity_offsets.len() {
                 let off = compute_offset(&a.anim_type, a.elapsed, a.duration);
                 self.entity_offsets[a.entity_id as usize] = [off[0], off[1], 0.0, 0.0];
             }
+        }
+
+        // Mark dirty when any animation ran this tick. This ensures one final upload
+        // that pushes zeroed offsets to the GPU after the last animation completes.
+        if had_active {
+            self.entity_offsets_dirty = true;
         }
 
         self.camera.tick(dt);
@@ -592,12 +608,12 @@ impl jEngine {
                 .add(TextWidget {
                     text: "DEBUG INSPECTOR [F1]".to_string(),
                     size: Some(debug_fs),
-                    color: Color::DARK_BLUE,
+                    color: Some(Color::DARK_BLUE),
                 })
                 .add(TextWidget {
                     text: stats_text,
                     size: Some(debug_fs),
-                    color: Color::BLACK,
+                    color: Some(Color::BLACK),
                 });
 
             if let Some(extra) = extra_content {
@@ -638,10 +654,10 @@ impl jEngine {
                     let ph = tile_h as f32;
                     let dummy_uv = [0.0f32, 0.0];
 
-                    let tl = TileVertex { position: [px,      py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
-                    let tr = TileVertex { position: [px + pw, py     ], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
-                    let bl = TileVertex { position: [px,      py + ph], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
-                    let br = TileVertex { position: [px + pw, py + ph], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let tl = TileVertex { position: [px,      py,      0.9], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let tr = TileVertex { position: [px + pw, py,      0.9], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let bl = TileVertex { position: [px,      py + ph, 0.9], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
+                    let br = TileVertex { position: [px + pw, py + ph, 0.9], uv: dummy_uv, fg_color: [0.0; 4], bg_color: cell.color.0, entity_id: NO_ENTITY, layer_id: 0.0 };
                     char_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
                 }
             }
@@ -659,10 +675,10 @@ impl jEngine {
 
                     let (uv_min, uv_max) = self.renderer.atlas.uv_for_index(cell.index);
                     
-                    let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
-                    let tr = TileVertex { position: [px + pw, py     ], uv: [uv_max[0], uv_min[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
-                    let bl = TileVertex { position: [px,      py + ph], uv: [uv_min[0], uv_max[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
-                    let br = TileVertex { position: [px + pw, py + ph], uv: uv_max,                  fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let tl = TileVertex { position: [px,      py,      0.9], uv: uv_min,                  fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let tr = TileVertex { position: [px + pw, py,      0.9], uv: [uv_max[0], uv_min[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let bl = TileVertex { position: [px,      py + ph, 0.9], uv: [uv_min[0], uv_max[1]], fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
+                    let br = TileVertex { position: [px + pw, py + ph, 0.9], uv: uv_max,                  fg_color: cell.fg.0, bg_color: [0.0; 4], entity_id: cell.entity_id, layer_id: 1.0 };
                     char_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
                 }
             }
@@ -688,16 +704,27 @@ impl jEngine {
             let uv_max = cmd.data.uv_max;
             let fg = cmd.tint.0;
 
-            let tl = TileVertex { position: [px,      py     ], uv: uv_min,                  fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
-            let tr = TileVertex { position: [px + pw, py     ], uv: [uv_max[0], uv_min[1]], fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
-            let bl = TileVertex { position: [px,      py + ph], uv: [uv_min[0], uv_max[1]], fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
-            let br = TileVertex { position: [px + pw, py + ph], uv: uv_max,                  fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let tl = TileVertex { position: [px,      py,      0.9], uv: uv_min,                  fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let tr = TileVertex { position: [px + pw, py,      0.9], uv: [uv_max[0], uv_min[1]], fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let bl = TileVertex { position: [px,      py + ph, 0.9], uv: [uv_min[0], uv_max[1]], fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
+            let br = TileVertex { position: [px + pw, py + ph, 0.9], uv: uv_max,                  fg_color: fg, bg_color: [0.0; 4], entity_id: cmd.entity_id, layer_id };
             sprite_verts.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
         }
 
-        self.renderer.update_entity_offsets(&self.entity_offsets);
+        // Only upload entity offsets when they have changed. The flag stays true for
+        // one extra frame after the last animation ends to push zeroed values, then
+        // clears so the 160 KB write is skipped on fully idle frames.
+        if self.entity_offsets_dirty {
+            self.renderer.update_entity_offsets(&self.entity_offsets);
+            if self.active_animations.is_empty() {
+                self.entity_offsets_dirty = false;
+            }
+        }
 
-        (self.cached_char_verts.clone(), sprite_verts)
+        // Move the cached char verts out (O(1) pointer swap, no allocation).
+        // The caller in window_event restores them after the render call so the
+        // cache is available for the next frame without reallocation.
+        (std::mem::take(&mut self.cached_char_verts), sprite_verts)
     }
 
     fn handle_resize(&mut self) {
@@ -967,7 +994,7 @@ impl ApplicationHandler for App {
 
                 engine.sprite_commands.clear();
                 engine.particle_vertices.clear();
-                engine.ui.ui_vertices.clear();
+                engine.ui.clear();
                 self.game.render(engine);
 
                 // Draw debug inspector if active
@@ -993,7 +1020,11 @@ impl ApplicationHandler for App {
                     }
                     Err(e) => eprintln!("render error: {e}"),
                 }
-                
+
+                // Restore the char vert cache so it survives to the next frame
+                // without reallocation. O(1) pointer move — no heap allocation.
+                engine.cached_char_verts = char_verts;
+
                 // End of frame cleanup
                 engine.input.clear_frame_state();
             }

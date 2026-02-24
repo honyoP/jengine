@@ -1,13 +1,13 @@
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ParticleVertex {
-    pub position: [f32; 2],
+    pub position: [f32; 3],
     pub color: [f32; 4],
 }
 
 impl ParticleVertex {
     const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
-        0 => Float32x2,
+        0 => Float32x3,
         1 => Float32x4,
     ];
 
@@ -59,12 +59,19 @@ pub fn create_particle_pipeline(
             })],
             compilation_options: Default::default(),
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+                    primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+        
         multiview_mask: None,
         cache: None,
     });

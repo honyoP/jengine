@@ -21,7 +21,7 @@
 // ── Structs ───────────────────────────────────────────────────────────────────
 
 struct VertexInput {
-    @location(0) position:   vec2<f32>,
+    @location(0) position:   vec3<f32>,
     @location(1) tex_coords: vec2<f32>,
     @location(2) color:      vec4<f32>,
 };
@@ -62,7 +62,7 @@ var<uniform> mtsdf_params: MtsdfParams;
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = projection * vec4<f32>(in.position, 0.0, 1.0);
+    out.clip_position = projection * vec4<f32>(in.position, 1.0);
     out.uv    = in.tex_coords;
     out.color = in.color;
     return out;

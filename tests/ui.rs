@@ -88,7 +88,7 @@ fn text_layer_clear_resets_buffers() {
     let mut layer = TextLayer::new();
     layer.set_font(make_font());
     layer.vertices.push(Vertex {
-        position: [0.0, 0.0],
+        position: [0.0, 0.0, 0.5],
         tex_coords: [0.0, 0.0],
         color: [1.0, 1.0, 1.0, 1.0],
     });

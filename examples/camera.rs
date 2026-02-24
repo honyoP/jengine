@@ -23,6 +23,7 @@
 
 use jengine::engine::{Color, Game, jEngine, KeyCode};
 use jengine::renderer::text::Font;
+use jengine::ui::modern::Panel;
 use jengine::{DEFAULT_FONT_METADATA, DEFAULT_TILE_H, DEFAULT_TILE_W, DEFAULT_TILESET};
 
 // ── World constants ───────────────────────────────────────────────────────────
@@ -161,26 +162,26 @@ impl Game for CameraDemo {
         let zoom_now = engine.camera_zoom();
 
         // Top bar.
-        engine.ui.ui_rect(0.0, 0.0, sw, th, Color([0.0, 0.0, 0.0, 0.85]));
+        Panel::new(0.0, 0.0, sw, 30.0).with_color(Color([0.0, 0.0, 0.0, 0.85])).draw(engine);
         engine.ui.ui_text(
-            tw,
-            0.0,
+            20.0,
+            8.0,
             &format!(
                 "Camera: ({:.0}, {:.0})  Zoom: {:.2}  Target zoom: {:.2}",
                 self.cam_x, self.cam_y, zoom_now, self.zoom_target
             ),
             Color::WHITE,
-            Color::TRANSPARENT, None);
+            Color::TRANSPARENT, Some(14.0));
 
         // Bottom hint bar.
         let sh = engine.grid_height() as f32 * th;
-        engine.ui.ui_rect(0.0, sh - th, sw, th, Color([0.0, 0.0, 0.0, 0.85]));
+        Panel::new(0.0, sh - 30.0, sw, 30.0).with_color(Color([0.0, 0.0, 0.0, 0.85])).draw(engine);
         engine.ui.ui_text(
-            tw,
-            sh - th,
+            20.0,
+            sh - 22.0,
             "[Arrows] pan   [=/-] zoom   [Space] shake   [R] reset   [Esc] quit",
             Color([0.6, 0.7, 0.65, 1.0]),
-            Color::TRANSPARENT, None);
+            Color::TRANSPARENT, Some(14.0));
     }
 }
 

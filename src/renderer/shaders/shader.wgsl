@@ -1,5 +1,5 @@
 struct VertexInput {
-    @location(0) position: vec2<f32>,
+    @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) fg_color: vec4<f32>,
     @location(3) bg_color: vec4<f32>,
@@ -41,7 +41,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     if in.layer_id > 0.4 && in.entity_id != 0xFFFFFFFFu && in.entity_id < arrayLength(&entity_offsets) {
         offset = entity_offsets[in.entity_id].xy;
     }
-    out.clip_position = camera.view_proj * vec4<f32>(in.position + offset, 0.0, 1.0);
+    out.clip_position = camera.view_proj * vec4<f32>(in.position.xy + offset, in.position.z, 1.0);
     out.uv = in.uv;
     out.fg_color = in.fg_color;
     out.bg_color = in.bg_color;

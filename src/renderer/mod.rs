@@ -5,6 +5,7 @@ pub mod post_process;
 pub mod sprite_atlas;
 pub mod text;
 pub mod text_pipeline;
+pub mod ui_pipeline;
 pub mod utils;
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use post_process::PostProcessStack;
 use sprite_atlas::SpriteAtlas;
 use text::Vertex as TextVertex;
 use text_pipeline::{TextPipeline, create_text_pipeline};
+use ui_pipeline::{UIPipeline, UIVertex, create_ui_pipeline};
 
 use crate::camera::CameraUniform;
 
@@ -55,11 +57,14 @@ pub struct Renderer {
     particle_pipeline: ParticlePipeline,
     /// MTSDF text pipeline (separate shader, vertex format, and sampler).
     text_pipeline: TextPipeline,
+    /// Modern SDF-based UI pipeline.
+    ui_modern_pipeline: UIPipeline,
     /// Static orthographic projection (no camera) — used by UI and text passes.
     projection_buffer: wgpu::Buffer,
-    projection_bind_group: wgpu::BindGroup,
     /// Text pipeline's own projection bind group (same buffer, compatible layout).
     text_projection_bind_group: wgpu::BindGroup,
+    /// Modern UI projection bind group.
+    ui_projection_bind_group: wgpu::BindGroup,
     /// Camera view-projection buffer — used by world passes (char, sprite, particle).
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -76,6 +81,9 @@ pub struct Renderer {
     font_texture: wgpu::Texture,
     /// Bind group for the MTSDF font atlas (Linear sampler, Rgba8Unorm, + params).
     font_bind_group: wgpu::BindGroup,
+    /// Depth texture for UI layering.
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
     /// Cached MTSDF parameters (distance_range, atlas size) mirrored on the CPU
     /// so `set_mtsdf_distance_range` can patch only the range without re-reading
     /// the buffer from the GPU.
@@ -99,20 +107,11 @@ pub struct Renderer {
     pub(crate) atlas: Atlas,
     /// Loaded sprite atlas metadata (UVs, tile spans, etc.).
     pub(crate) sprite_atlas: Option<SpriteAtlas>,
-    // ── UI overlay vertex buffer (persistent, invalidated by FNV hash) ─────
-    ui_vertex_buffer: Option<wgpu::Buffer>,
-    ui_vertex_buffer_capacity: u32,
-    ui_vertex_hash: u64,
+    // ── Modern UI vertex buffer ──
+    ui_modern_vertex_buffer: Option<wgpu::Buffer>,
+    ui_modern_vertex_buffer_capacity: u32,
     /// Post-processing stack for "juice" effects.
     pub post_process: PostProcessStack,
-}
-
-/// FNV-1a 64-bit hash — used to detect unchanged UI vertex data.
-/// Algorithm: XOR byte into accumulator, then multiply by the FNV prime.
-fn fnv1a_64(data: &[u8]) -> u64 {
-    data.iter().fold(14695981039346656037u64, |h, &b| {
-        (h ^ b as u64).wrapping_mul(1099511628211)
-    })
 }
 
 /// Load a PNG from raw bytes as an `Rgba8Unorm` texture (no gamma conversion).
@@ -144,6 +143,31 @@ fn load_rgba8_texture(
         wgpu::util::TextureDataOrder::LayerMajor,
         &img,
     );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_depth_texture(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+    label: &str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d {
+        width: config.width,
+        height: config.height,
+        depth_or_array_layers: 1,
+    };
+    let desc = wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+    let texture = device.create_texture(&desc);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
 }
@@ -207,6 +231,8 @@ impl Renderer {
 
         let text_pipeline = create_text_pipeline(&device, format);
 
+        let ui_modern_pipeline = create_ui_pipeline(&device, format);
+
         let particle_pipeline = create_particle_pipeline(
             &device,
             format,
@@ -221,19 +247,20 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("projection_bg"),
-            layout: &tile_pipeline.projection_bind_group_layout,
+        // Text pipeline uses its own layout but the same buffer.
+        let text_projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("text_projection_bg"),
+            layout: &text_pipeline.projection_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: projection_buffer.as_entire_binding(),
             }],
         });
 
-        // Text pipeline uses its own layout but the same buffer.
-        let text_projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("text_projection_bg"),
-            layout: &text_pipeline.projection_bind_group_layout,
+        // Modern UI projection bind group.
+        let ui_projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui_projection_bg"),
+            layout: &ui_modern_pipeline.projection_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: projection_buffer.as_entire_binding(),
@@ -321,6 +348,8 @@ impl Renderer {
             ],
         });
 
+        let (depth_texture, depth_view) = create_depth_texture(&device, &config, "depth_texture");
+
         let mut post_process = PostProcessStack::new(&device, &config);
         if use_scanlines {
             post_process.add_effect(Box::new(post_process::ScanlineEffect::new(
@@ -339,9 +368,10 @@ impl Renderer {
             tile_pipeline,
             particle_pipeline,
             text_pipeline,
+            ui_modern_pipeline,
             projection_buffer,
-            projection_bind_group,
             text_projection_bind_group,
+            ui_projection_bind_group,
             camera_buffer,
             camera_bind_group,
             entity_offsets_buffer,
@@ -350,6 +380,8 @@ impl Renderer {
             sprite_atlas_bind_group: None,
             font_texture,
             font_bind_group,
+            depth_texture,
+            depth_view,
             mtsdf_params,
             mtsdf_params_buffer,
             char_vertex_buffer: None,
@@ -364,9 +396,8 @@ impl Renderer {
             text_index_buffer_capacity: 0,
             atlas,
             sprite_atlas: None,
-            ui_vertex_buffer: None,
-            ui_vertex_buffer_capacity: 0,
-            ui_vertex_hash: 0,
+            ui_modern_vertex_buffer: None,
+            ui_modern_vertex_buffer_capacity: 0,
             post_process,
         }
     }
@@ -406,6 +437,10 @@ impl Renderer {
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
+
+        let (depth_texture, depth_view) = create_depth_texture(&self.device, &self.config, "depth_texture");
+        self.depth_texture = depth_texture;
+        self.depth_view = depth_view;
 
         let proj = orthographic_projection(new_size.width as f32, new_size.height as f32);
         self.queue
@@ -470,7 +505,7 @@ impl Renderer {
         char_verts: &[TileVertex],
         sprite_verts: &[TileVertex],
         particle_verts: &[ParticleVertex],
-        ui_verts: &[TileVertex],
+        ui_verts: &[UIVertex],
         text_verts: &[TextVertex],
         text_indices: &[u16],
     ) -> Result<(), wgpu::SurfaceError> {
@@ -507,6 +542,7 @@ impl Renderer {
         upload_vertex_buf!(self.char_vertex_buffer,     self.char_vertex_buffer_capacity,     char_verts,     TileVertex,     "char_vertex_buffer");
         upload_vertex_buf!(self.sprite_vertex_buffer,   self.sprite_vertex_buffer_capacity,   sprite_verts,   TileVertex,     "sprite_vertex_buffer");
         upload_vertex_buf!(self.particle_vertex_buffer, self.particle_vertex_buffer_capacity, particle_verts, ParticleVertex, "particle_vertex_buffer");
+        upload_vertex_buf!(self.ui_modern_vertex_buffer, self.ui_modern_vertex_buffer_capacity, ui_verts, UIVertex, "ui_modern_vertex_buffer");
 
         // ── Text vertex/index buffer management ───────────────────────────
         if !text_indices.is_empty() {
@@ -545,34 +581,6 @@ impl Renderer {
             );
         }
 
-        // ── UI vertex buffer invalidation ─────────────────────────────────
-        if !ui_verts.is_empty() {
-            let ui_bytes: &[u8] = bytemuck::cast_slice(ui_verts);
-            let new_hash = fnv1a_64(ui_bytes);
-            let new_count = ui_verts.len() as u32;
-
-            if new_count > self.ui_vertex_buffer_capacity || self.ui_vertex_buffer.is_none() {
-                let capacity = new_count.next_power_of_two().max(256);
-                self.ui_vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("ui_vertex_buffer"),
-                    size: capacity as u64 * std::mem::size_of::<TileVertex>() as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
-                self.ui_vertex_buffer_capacity = capacity;
-                self.ui_vertex_hash = !new_hash;
-            }
-
-            if new_hash != self.ui_vertex_hash {
-                self.queue.write_buffer(
-                    self.ui_vertex_buffer.as_ref().unwrap(),
-                    0,
-                    ui_bytes,
-                );
-                self.ui_vertex_hash = new_hash;
-            }
-        }
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -597,7 +605,14 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -642,16 +657,13 @@ impl Renderer {
                 }
             }
 
-            // ── Pass 4: UI solid fills (TileVertex, screen-fixed) ─────────
+            // ── Pass 4: Modern UI SDF (screen-fixed) ─────────────────────
             if !ui_verts.is_empty() {
-                if let Some(ui_buf) = &self.ui_vertex_buffer {
+                if let Some(ui_buf) = &self.ui_modern_vertex_buffer {
                     let count = ui_verts.len() as u32;
-                    let byte_len =
-                        (count as usize * std::mem::size_of::<TileVertex>()) as u64;
-                    pass.set_pipeline(&self.tile_pipeline.render_pipeline);
-                    pass.set_bind_group(0, &self.projection_bind_group, &[]);
-                    pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-                    pass.set_bind_group(2, &self.entity_offsets_bind_group, &[]);
+                    let byte_len = (count as usize * std::mem::size_of::<UIVertex>()) as u64;
+                    pass.set_pipeline(&self.ui_modern_pipeline.render_pipeline);
+                    pass.set_bind_group(0, &self.ui_projection_bind_group, &[]);
                     pass.set_vertex_buffer(0, ui_buf.slice(..byte_len));
                     pass.draw(0..count, 0..1);
                 }
